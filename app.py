@@ -26,6 +26,7 @@ from bleak import BleakScanner
 from switchbot import SwitchbotCurtain, parse_advertisement_data
 
 from music import Music
+from push import Push
 
 BASE = Path(__file__).parent
 DATA = BASE / "data"                                  # your settings, automations and history (git-ignored)
@@ -494,30 +495,53 @@ def next_run(a, s):
     return None
 
 
+def describe(a):
+    """Human text for an automation's action, e.g. "Curtain opened · ♫ Morning Coffee"."""
+    if a["device"] == "curtain":
+        text = {"open": "Curtain opened", "close": "Curtain closed"}.get(a["action"], f"Curtain set to {a.get('position')}%")
+    elif a["device"] == "music":
+        text = f"Playing {a.get('playlist_name') or 'music'}" if a["action"] == "play" else "Music paused"
+    else:
+        text = "Lamp on" + (f" · {a['brightness']}%" if a.get("brightness") else "") if a["action"] == "on" else "Lamp off"
+    if a["device"] != "music" and a.get("music_on") and a.get("music_uri"):
+        text += f" · ♫ {a.get('music_name') or 'music'}"
+    return text
+
+
 async def run_automation(app, a):
     jobs = [run_main_action(app, a)]
     if a["device"] != "music" and a.get("music_on") and a.get("music_uri"):  # "Also play music", in parallel
         jobs.append(app["music"].command("playlist", a["music_uri"], a.get("music_volume"),
                                          bool(a.get("music_shuffle")), reason="automation"))
-    await asyncio.gather(*jobs)
+    results = await asyncio.gather(*jobs, return_exceptions=True)
+    ok = all(r is True for r in results)
+    when = a["time"] if a["trigger"] == "time" else a["trigger"]
+    # notify only for automations (manual taps never call this)
+    try:
+        if ok:
+            await app["push"].send(describe(a), f"Automation · {when}", url="/#autos", tag=a["id"])
+        else:
+            await app["push"].send("⚠️ Automation didn't work", f"{describe(a)} · {when}", url="/#autos", tag=a["id"])
+    except Exception:  # noqa: BLE001
+        log.exception("push failed")
 
 
 async def run_main_action(app, a):
     label = "automation"
     if a["device"] == "curtain":
-        await app["curtain"].command(a["action"], a.get("position"), reason=label)
+        return await app["curtain"].command(a["action"], a.get("position"), reason=label)
     elif a["device"] == "music":
         if a["action"] == "play" and a.get("uri"):
-            await app["music"].command("playlist", a["uri"], a.get("volume"), a.get("shuffle", False), reason=label)
-        else:
-            await app["music"].command(a["action"], volume=a.get("volume") if a["action"] == "play" else None, reason=label)
+            return await app["music"].command("playlist", a["uri"], a.get("volume"), a.get("shuffle", False), reason=label)
+        return await app["music"].command(a["action"], volume=a.get("volume") if a["action"] == "play" else None,
+                                          reason=label)
     else:
         change = {"on": a["action"] == "on"}
         if a["action"] == "on" and a.get("brightness"):
             change["brightness"] = a["brightness"]
         if a["action"] == "on" and a.get("kelvin"):
             change["kelvin"] = a["kelvin"]
-        await app["lamp"].set(change, reason=label)
+        return await app["lamp"].set(change, reason=label)
 
 
 async def scheduler(app):
@@ -757,6 +781,43 @@ async def api_preset_delete(request):
     return web.json_response(snapshot(request.app))
 
 
+async def api_push_key(request):
+    return web.json_response({"key": request.app["push"].public_key(), "subscribers": len(request.app["push"].subs)})
+
+
+async def api_push_subscribe(request):
+    try:
+        request.app["push"].subscribe(await request.json())
+    except ValueError as exc:
+        raise web.HTTPBadRequest(text=str(exc))
+    return web.json_response({"ok": True})
+
+
+async def api_push_unsubscribe(request):
+    request.app["push"].unsubscribe((await request.json()).get("endpoint", ""))
+    return web.json_response({"ok": True})
+
+
+async def api_push_test(request):
+    sent = await request.app["push"].send("🔔 Notifications work", "You'll get one whenever an automation runs.",
+                                          url="/#autos", tag="test")
+    return web.json_response({"sent": sent})
+
+
+async def service_worker(request):
+    return web.FileResponse(BASE / "web" / "sw.js", headers={"Cache-Control": "no-cache",
+                                                              "Content-Type": "application/javascript"})
+
+
+async def manifest(request):
+    return web.json_response({
+        "name": "NoFuss Home", "short_name": "Home", "start_url": "/", "scope": "/", "display": "standalone",
+        "background_color": "#000000", "theme_color": "#000000",
+        "icons": [{"src": "/static/icon-512.png", "sizes": "512x512", "type": "image/png"},
+                  {"src": "/static/icon.png", "sizes": "180x180", "type": "image/png"}]},
+        content_type="application/manifest+json")
+
+
 async def index(request):
     return web.FileResponse(BASE / "web" / "index.html", headers={"Cache-Control": "no-cache"})
 
@@ -830,12 +891,19 @@ def main():
         save(SETTINGS_FILE, settings)
     app["curtain"].on_found = remember_curtain
     app["sensors"] = Sensors()
+    app["push"] = Push(DATA, CONFIG_DIR)
     app["music"] = Music(settings["music"], history)
     app["music"].on_config_change = lambda: save(SETTINGS_FILE, settings)
     app["lamp"] = Lamp(settings["lamp"], history)
     app["lamp"].on_config_change = lambda: save(SETTINGS_FILE, settings)
     app.add_routes([
         web.get("/", index),
+        web.get("/sw.js", service_worker),
+        web.get("/manifest.webmanifest", manifest),
+        web.get("/api/push/key", api_push_key),
+        web.post("/api/push/subscribe", api_push_subscribe),
+        web.post("/api/push/unsubscribe", api_push_unsubscribe),
+        web.post("/api/push/test", api_push_test),
         web.get("/api/state", api_state),
         web.post("/api/curtain", api_curtain),
         web.post("/api/lamp", api_lamp),

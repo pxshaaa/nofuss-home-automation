@@ -3,3 +3,4 @@ astral==3.2
 bleak==3.0.2
 PySwitchbot==3.0.0
 soco==0.31.5
+pywebpush==2.5.0

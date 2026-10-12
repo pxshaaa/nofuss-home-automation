@@ -7,6 +7,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Home">
 <link rel="apple-touch-icon" href="/static/icon.png?v=2">
+<link rel="manifest" href="/manifest.webmanifest">
 <title>Home</title>
 <style>
 :root {
@@ -96,6 +97,11 @@ main { overflow-x: clip; }
 .plist button.cur .pn { color: #1ed760; }
 .plist button.busy { opacity: .5; }
 .autosel { width: 100%; font: inherit; color: var(--text); background: var(--fill); border: 0; border-radius: 10px; padding: 9px 12px; -webkit-appearance: none; }
+
+.notify { padding: 14px 16px; }
+.nrow { display: flex; align-items: center; gap: 12px; }
+.nrow .bell { font-size: 22px; } .nrow .t { font-weight: 600; } .nrow .d { color: var(--muted); font-size: 14px; }
+.nrow .btn { flex: none; }
 
 /* curtain */
 .window { height: 190px; border-radius: 14px; position: relative; overflow: hidden;
@@ -353,6 +359,12 @@ details summary::-webkit-details-marker { display: none; }
     <div class="top"><button class="back" data-go="home"><svg><use href="#i-back"/></svg>Home</button></div>
     <h1>Automations</h1>
     <p class="sub" id="a-sub">&nbsp;</p>
+    <div class="card notify" id="n-card">
+      <div class="nrow"><span class="bell">🔔</span>
+        <div class="tclip"><div class="t">Automation notifications</div><div class="d" id="n-desc">–</div></div>
+        <button class="btn small primary" id="n-btn" hidden>Turn on</button>
+      </div>
+    </div>
     <div id="a-list"></div>
     <button class="add" id="a-add">+ New automation</button>
   </section>
@@ -594,6 +606,51 @@ $("p-ok").onclick = async () => {
   catch (err) { toast("Error: " + err.message); }
 };
 $("p-name").onkeydown = (e) => { if (e.key === "Enter") $("p-ok").click(); };
+
+/* ---------- push notifications ---------- */
+const pushCapable = "serviceWorker" in navigator && "PushManager" in window && window.isSecureContext;
+const standalone = matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+let pushState = "unknown";  // on | off | denied | unsupported
+const b64ToBytes = (s) => { const p = "=".repeat((4 - s.length % 4) % 4), b = atob((s + p).replace(/-/g, "+").replace(/_/g, "/"));
+  return Uint8Array.from(b, c => c.charCodeAt(0)); };
+async function initPush() {
+  if (!pushCapable) { pushState = "unsupported"; return renderPush(); }
+  const reg = await navigator.serviceWorker.register("/sw.js");
+  const sub = await reg.pushManager.getSubscription();
+  pushState = Notification.permission === "denied" ? "denied" : sub ? "on" : "off";
+  if (sub) api("/api/push/subscribe", "POST", sub.toJSON()).catch(() => {});  // keep the server's copy fresh
+  renderPush();
+}
+function renderPush() {
+  const d = $("n-desc"), b = $("n-btn");
+  b.hidden = !(pushState === "off" || pushState === "on");
+  b.textContent = pushState === "on" ? "Test" : "Turn on";
+  b.classList.toggle("primary", pushState !== "on");
+  d.textContent = {
+    on: "On for this device — only for automations, not your taps",
+    off: "Get a notification whenever an automation runs",
+    denied: "Blocked — allow notifications for this app in iPhone Settings",
+    unsupported: !window.isSecureContext ? "Open the app via its https:// address and add it to your Home Screen"
+      : !standalone ? "Add this app to your Home Screen first (Share → Add to Home Screen)" : "Not supported on this device",
+    unknown: "–",
+  }[pushState];
+}
+$("n-btn").onclick = async () => {
+  if (pushState === "on") {
+    try { const r = await api("/api/push/test", "POST", {}); toast(r.sent ? "Test sent — check your lock screen" : "Couldn't send"); }
+    catch (e) { toast("Couldn't send: " + e.message.slice(0, 60)); }
+    return;
+  }
+  try {
+    if (await Notification.requestPermission() !== "granted") { pushState = "denied"; return renderPush(); }
+    const reg = await navigator.serviceWorker.ready, { key } = await api("/api/push/key");
+    const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToBytes(key) });
+    await api("/api/push/subscribe", "POST", sub.toJSON());
+    pushState = "on"; renderPush(); toast("Notifications on");
+    api("/api/push/test", "POST", {});
+  } catch (e) { toast("Error: " + e.message); }
+};
+initPush();
 
 /* ---------- automations ---------- */
 const sunAt = (trig) => trig === "sunset" ? S.sun.sunset : S.sun.sunrise;

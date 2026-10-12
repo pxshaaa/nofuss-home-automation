@@ -20,6 +20,7 @@ automations like *"open the curtain at 7:30 and play my morning playlist"* in a 
   - Curtain, lamp or music actions.
   - **"Also play music"**: open the curtain *and* start a playlist at a set volume, starting from a random song.
 - **Other devices**: SwitchBot meters such as the **Meter Pro CO2** show CO2, temperature and humidity, with a 24-hour chart and a gentle hint when it's time to air the room.
+- **Push notifications**: a lock-screen notification whenever an *automation* runs (or fails). Your own taps don't trigger one.
 - **Feels native on iPhone**: home-screen app, dark and light mode, haptic taps (iOS 18+).
 - **Private by default**: runs on your own Mac in your home network. Devices are controlled locally (Bluetooth / LAN) wherever possible.
 
@@ -89,6 +90,16 @@ The app has no login and should stay inside your home network. For remote access
 [Tailscale](https://tailscale.com) (free): install it on the Mac and your phone, then open
 `http://<mac-tailscale-name>:8765`. **Don't** port-forward it to the internet.
 
+### Notifications (automations)
+iPhones only allow push for home-screen web apps opened over **HTTPS**. With Tailscale this takes one command:
+1. In the Tailscale admin, turn on **MagicDNS** and **HTTPS Certificates** (DNS page).
+2. On the Mac, run:
+   ```bash
+   tailscale serve --bg --https=8443 http://127.0.0.1:8765
+   ```
+3. On your iPhone, open `https://<mac-name>.<tailnet>.ts.net:8443` in Safari, then Share → *Add to Home Screen*.
+4. In the app, go to **Automations → 🔔 Turn on** and tap Allow. A test notification arrives right away.
+
 ### iPhone volume buttons → Sonos volume
 iOS doesn't let web apps use the hardware volume buttons, but Shortcuts can do the job:
 1. Shortcuts → new shortcut → **Get Contents of URL**.
@@ -115,6 +126,7 @@ Restart after editing: `launchctl kickstart -k gui/$(id -u)/com.nofuss-home`
 - **The curtain isn't found**: move the Mac closer. Bluetooth reaches about one room. You can check that it's charged in the SwitchBot app.
 - **The lamp isn't found**: make sure *LAN Control* is on for that lamp in the Govee app, and that the Mac and lamp share a network.
 - **The playlists list is empty**: run the Spotify login again. Spotify logins expire after a few months.
+- **Notifications don't arrive**: open the app from the **https** home-screen icon (not Safari) and press *Test* on the Automations page. If it says "Blocked", allow notifications in iPhone Settings → Notifications → Home.
 - **Logs**: `tail -f ~/Library/Logs/nofuss-home.log`
 - **Update**: `git pull && ./setup.sh`
 - **Uninstall**: `launchctl bootout gui/$(id -u)/com.nofuss-home; rm ~/Library/LaunchAgents/com.nofuss-home.plist`, then delete the folder.
