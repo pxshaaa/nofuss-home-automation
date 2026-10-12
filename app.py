@@ -5,11 +5,14 @@ Curtain position: 0 = closed, 100 = open.
 """
 import asyncio
 import datetime as dt
+import faulthandler
 import json
 import logging
 import os
 import socket
 import subprocess
+import sys
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -170,8 +173,16 @@ class Curtain:
         }
 
 
+_govee_key = {"value": None, "at": 0.0}
+
+
 def govee_key():
-    return os.environ.get("GOVEE_API_KEY") or _read(CONFIG_DIR / "govee.key") or keychain("govee-api-key")
+    """Cached for a minute: it's checked on every status poll, so don't hit the disk each time."""
+    if _govee_key["value"] is None or time.monotonic() - _govee_key["at"] > 60:
+        _govee_key["value"] = (os.environ.get("GOVEE_API_KEY") or _read(CONFIG_DIR / "govee.key")
+                               or keychain("govee-api-key"))
+        _govee_key["at"] = time.monotonic()
+    return _govee_key["value"]
 
 
 def _read(path):
@@ -510,10 +521,10 @@ async def run_main_action(app, a):
 
 
 async def scheduler(app):
+    state = load(STATE_FILE, {"fired": {}})  # read once; kept in memory, written only when something fires
     while True:
         try:
             s = app["settings"]
-            state = load(STATE_FILE, {"fired": {}})
             now = dt.datetime.now(ZoneInfo(s["timezone"]))
             for a in s["automations"]:
                 if not a.get("enabled"):
@@ -750,7 +761,30 @@ async def index(request):
     return web.FileResponse(BASE / "web" / "index.html", headers={"Cache-Control": "no-cache"})
 
 
+def start_watchdog(loop, timeout=45):
+    """If the event loop stops responding (e.g. a file access hangs in the OS), dump all stacks to the
+    log and exit; launchd's KeepAlive restarts the app a few seconds later."""
+    beat = {"t": time.monotonic()}
+
+    def tick():
+        beat["t"] = time.monotonic()
+        loop.call_later(5, tick)
+
+    def watch():
+        while True:
+            time.sleep(10)
+            if time.monotonic() - beat["t"] > timeout:
+                log.error("event loop unresponsive for %.0f s - restarting", time.monotonic() - beat["t"])
+                faulthandler.dump_traceback(file=sys.stderr, all_threads=True)
+                sys.stderr.flush()
+                os._exit(1)
+
+    loop.call_soon(tick)
+    threading.Thread(target=watch, name="watchdog", daemon=True).start()
+
+
 async def on_startup(app):
+    start_watchdog(asyncio.get_running_loop())
     def on_adv(device, adv_data):
         app["curtain"].on_adv(device, adv_data)
         app["sensors"].on_adv(device, adv_data)
