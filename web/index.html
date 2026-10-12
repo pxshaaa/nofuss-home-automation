@@ -1,0 +1,925 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Home">
+<link rel="apple-touch-icon" href="/static/icon.png">
+<title>Home</title>
+<style>
+:root {
+  --bg: #f2f2f7; --card: #fff; --text: #1c1c1e; --muted: #8e8e93; --line: #e5e5ea; --fill: #eeeef0;
+  --accent: #ff9f0a; --on: #34c759; --danger: #ff3b30; --blue: #0a84ff;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #000; --card: #1c1c1e; --text: #f2f2f7; --line: #2c2c2e; --fill: #2c2c2e; }
+}
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body { margin: 0; background: var(--bg); color: var(--text); overflow-x: hidden; }
+body { font: 17px/1.35 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+  padding: max(16px, env(safe-area-inset-top)) 16px max(28px, env(safe-area-inset-bottom));
+  -webkit-user-select: none; user-select: none; }
+main { max-width: 480px; margin: 0 auto; }
+button { font: inherit; color: inherit; border: 0; background: none; padding: 0; cursor: pointer; }
+.view { display: none; } .view.active { display: block; animation: in .18s ease-out; }
+@keyframes in { from { opacity: 0; transform: translateY(6px); } }
+
+/* header */
+.top { display: flex; align-items: center; gap: 6px; min-height: 44px; }
+.back { color: var(--accent); font-size: 17px; display: flex; align-items: center; gap: 2px; padding: 8px 8px 8px 0; }
+.back svg { width: 12px; height: 20px; }
+h1 { font-size: 34px; letter-spacing: -.6px; margin: 2px 2px 4px; }
+.sub { color: var(--muted); margin: 0 2px 20px; font-size: 15px; }
+
+/* tiles */
+.tiles { display: grid; gap: 12px; }
+.tile { display: flex; align-items: center; gap: 14px; background: var(--card); border-radius: 20px;
+  padding: 16px; text-align: left; width: 100%; }
+.tile:active { transform: scale(.98); }
+.ico { width: 48px; height: 48px; border-radius: 14px; display: grid; place-items: center; flex: none;
+  background: var(--fill); }
+.ico svg { width: 26px; height: 26px; }
+.tile .name { font-weight: 600; font-size: 18px; }
+.tile .st { color: var(--muted); font-size: 15px; margin-top: 1px; }
+.tile .chev { margin-left: auto; color: var(--muted); }
+.tile.lit .ico { background: #ffd60a33; color: #ff9f0a; }
+
+.card { background: var(--card); border-radius: 20px; padding: 18px; margin-bottom: 12px; }
+.label { font-size: 13px; text-transform: uppercase; letter-spacing: .4px; color: var(--muted); margin: 22px 6px 8px; }
+
+.morerow { display: flex; align-items: center; gap: 10px; width: 100%; margin-top: 18px; padding: 12px 6px;
+  color: var(--muted); font-size: 15px; text-align: left; }
+.morerow .mi { width: 20px; height: 20px; } .morerow .chev { margin-left: auto; }
+.morerow .alert { width: 8px; height: 8px; border-radius: 50%; display: none; }
+.co2 { text-align: center; padding: 8px 0 4px; }
+.co2 .num { font-size: 56px; font-weight: 700; letter-spacing: -1.5px; line-height: 1; font-variant-numeric: tabular-nums; }
+.co2 .num small { font-size: 18px; font-weight: 600; color: var(--muted); letter-spacing: 0; margin-left: 4px; }
+.co2 .lvl { display: inline-block; margin-top: 10px; padding: 5px 12px; border-radius: 20px; font-size: 14px; font-weight: 600; }
+.stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 18px; }
+.stats div { background: var(--fill); border-radius: 14px; padding: 10px; text-align: center; }
+.stats b { display: block; font-size: 20px; font-variant-numeric: tabular-nums; } .stats span { font-size: 12px; color: var(--muted); }
+.spark { margin-top: 16px; } .spark svg { width: 100%; height: 90px; display: block; }
+.spark .axis { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); margin-top: 4px; }
+.devname { font-size: 13px; color: var(--muted); text-align: center; margin-top: 12px; }
+
+.tiles { grid-template-columns: minmax(0, 1fr); }
+.tile { min-width: 0; overflow: hidden; }
+.tile > div:not(.ico), .tclip { min-width: 0; flex: 1; overflow: hidden; }
+.tile .chev { flex: none; }
+.tile .st { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+main { overflow-x: clip; }
+.tclip { min-width: 0; } .tclip .st { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tile.playing .ico { background: #1ed76033; color: #1ed760; }
+.np { text-align: center; }
+.art { position: relative; width: 210px; height: 210px; margin: 4px auto 16px; border-radius: 16px; background: var(--fill);
+  display: grid; place-items: center; overflow: hidden; box-shadow: 0 10px 30px rgba(0,0,0,.25); }
+.art svg { width: 64px; height: 64px; color: var(--muted); }
+.art img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: none; }
+.art.has img { display: block; }
+.np-t { font-size: 21px; font-weight: 700; letter-spacing: -.3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.np-a { color: var(--muted); font-size: 16px; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ctrls { display: flex; justify-content: center; align-items: center; gap: 28px; margin: 18px 0 4px; }
+.cb { width: 52px; height: 52px; border-radius: 50%; display: grid; place-items: center; }
+.cb svg { width: 26px; height: 26px; }
+.cb.big { width: 70px; height: 70px; background: var(--text); color: var(--bg); }
+.cb.big svg { width: 30px; height: 30px; }
+.cb:active { transform: scale(.92); }
+.slider.music .fill { background: #1ed760; }
+.plist { padding: 6px 12px; }
+.plist button { display: flex; align-items: center; gap: 12px; width: 100%; padding: 8px 2px; text-align: left; border-top: 1px solid var(--line); }
+.plist button:first-child { border-top: 0; }
+.plist img, .plist .ph { width: 44px; height: 44px; border-radius: 6px; flex: none; background: var(--fill); object-fit: cover; }
+.plist .pn { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.plist .pc { color: var(--muted); font-size: 13px; }
+.plist button.cur .pn { color: #1ed760; }
+.plist button.busy { opacity: .5; }
+.autosel { width: 100%; font: inherit; color: var(--text); background: var(--fill); border: 0; border-radius: 10px; padding: 9px 12px; -webkit-appearance: none; }
+
+/* curtain */
+.window { height: 190px; border-radius: 14px; position: relative; overflow: hidden;
+  background: linear-gradient(#5aa9e6, #bfe0f7 70%, #e9f5fd); }
+.window .panel { position: absolute; top: 0; bottom: 0; width: 50%; transition: width .9s ease;
+  background: repeating-linear-gradient(90deg, #d2ad86 0 11px, #bf9873 11px 22px); box-shadow: 0 0 12px rgba(0,0,0,.18); }
+.window .l { left: 0; } .window .r { right: 0; }
+.window .rod { position: absolute; left: 0; right: 0; top: 0; height: 6px; background: #8a6a4b; }
+.bigstate { text-align: center; margin: 16px 0 4px; }
+.bigstate b { font-size: 28px; letter-spacing: -.4px; }
+.bigstate div { color: var(--muted); font-size: 14px; min-height: 19px; }
+.pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 14px; }
+.btn { border-radius: 14px; padding: 15px 0; background: var(--fill); font-weight: 600; text-align: center; }
+.btn.primary { background: var(--accent); color: #fff; }
+.btn:active { opacity: .6; }
+.btn.small { padding: 9px 16px; font-size: 15px; }
+
+/* slider (custom, big hit area) */
+.slider { position: relative; height: 54px; border-radius: 14px; background: var(--fill); overflow: hidden;
+  margin-top: 14px; touch-action: none; }
+.slider .fill { position: absolute; left: 0; top: 0; bottom: 0; background: var(--accent); opacity: .9; }
+.slider .txt { position: absolute; inset: 0; display: flex; align-items: center; justify-content: space-between;
+  padding: 0 16px; font-weight: 600; font-size: 15px; pointer-events: none; }
+.slider .txt span:last-child { font-variant-numeric: tabular-nums; }
+.slider.lamp .fill { background: #ffd60a; }
+
+/* lamp */
+.bulb { display: grid; place-items: center; margin: 6px auto 0; width: 132px; height: 132px; border-radius: 50%;
+  background: var(--fill); transition: background .3s, box-shadow .3s; }
+.bulb svg { width: 56px; height: 56px; color: var(--muted); }
+.bulb.on { box-shadow: 0 0 60px var(--glow, #ffd60a88); }
+.bulb.on svg { color: #fff; }
+.chips { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; margin-top: 14px; }
+.zones { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 16px; }
+.zones button { background: var(--fill); border-radius: 14px; padding: 10px 4px; display: flex; flex-direction: column;
+  align-items: center; gap: 1px; transition: background .2s; }
+.zones button b { font-size: 15px; } .zones button small { font-size: 12px; color: var(--muted); }
+.zones button.on { background: #ffd60a; color: #1c1c1e; } .zones button.on small { color: #5a4a00; }
+.zones button.pending { opacity: .55; }
+.rowlabel { display: flex; justify-content: space-between; align-items: baseline; }
+.rowlabel button { color: var(--accent); font-size: 15px; text-transform: none; letter-spacing: 0; }
+.presets { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+.preset { position: relative; background: var(--card); border-radius: 18px; padding: 14px; text-align: left;
+  display: flex; flex-direction: column; gap: 10px; min-height: 96px; overflow: hidden; }
+.preset { transition: transform .12s, box-shadow .25s, background .25s; }
+.preset:active, .preset.pressed { transform: scale(.95); }
+.preset.active { box-shadow: inset 0 0 0 2.5px var(--c); background: color-mix(in srgb, var(--c) 14%, var(--card)); }
+.preset.active .dot { display: none; }
+.preset .check { position: absolute; right: 12px; top: 12px; width: 24px; height: 24px; border-radius: 50%;
+  background: var(--c); color: #1c1c1e; display: grid; place-items: center; font-size: 14px; font-weight: 800; }
+.preset.busy { animation: pulse 1s ease-in-out infinite; }
+.preset.busy .dot { animation: glow 1s ease-in-out infinite; }
+@keyframes pulse { 50% { box-shadow: inset 0 0 0 2.5px var(--c); } }
+@keyframes glow { 50% { transform: scale(1.5); } }
+.preset .em { font-size: 24px; line-height: 1; }
+.preset .nm { font-weight: 600; }
+.preset .ds { color: var(--muted); font-size: 13px; margin-top: -8px; }
+.preset .dot { position: absolute; right: 14px; top: 14px; width: 18px; height: 18px; border-radius: 50%;
+  box-shadow: 0 0 14px var(--c); background: var(--c); }
+
+.preset .x { position: absolute; right: 8px; top: 8px; width: 26px; height: 26px; border-radius: 50%;
+  background: var(--danger); color: #fff; font-weight: 700; display: grid; place-items: center; font-size: 15px; }
+.preset { -webkit-touch-callout: none; }
+.presets.editing .preset:not(.add) { animation: wiggle .28s ease-in-out infinite alternate; }
+.presets.editing .preset:nth-child(2n):not(.add) { animation-delay: -.14s; }
+@keyframes wiggle { from { transform: rotate(-1.4deg); } to { transform: rotate(1.4deg); } }
+.presets.editing .preset:not(.add) { touch-action: none; }
+.preset.dragging { animation: none !important; z-index: 5; pointer-events: none; transition: none;
+  box-shadow: 0 14px 34px rgba(0,0,0,.5); }
+.preset .x { right: 8px; top: 8px; width: 28px; height: 28px; z-index: 2; }
+.preset.add { align-items: center; justify-content: center; color: var(--accent); font-weight: 600; background: transparent;
+  border: 2px dashed var(--line); }
+.savebox input { width: 100%; font: inherit; color: var(--text); background: var(--fill); border: 0; border-radius: 12px;
+  padding: 12px 14px; -webkit-user-select: text; user-select: text; }
+.savebox .pair { margin-top: 10px; }
+.hint { text-align: center; color: var(--muted); font-size: 13px; margin-top: 14px; }
+.sw { width: 32px; height: 32px; border-radius: 50%; border: 3px solid var(--card); box-shadow: 0 0 0 1px var(--line); }
+.sw.sel { box-shadow: 0 0 0 2px var(--text); }
+
+/* automations */
+.auto { background: var(--card); border-radius: 18px; margin-bottom: 10px; overflow: hidden; }
+.auto .head { display: flex; align-items: center; gap: 12px; padding: 14px 16px; width: 100%; text-align: left; }
+.auto .head .ico { width: 38px; height: 38px; border-radius: 11px; }
+.auto .head .ico svg { width: 21px; height: 21px; }
+.auto .t { font-weight: 600; }
+.auto .d { color: var(--muted); font-size: 14px; }
+.auto.off .t, .auto.off .head .ico { opacity: .45; }
+.auto .edit { display: none; padding: 4px 16px 16px; border-top: 1px solid var(--line); }
+.auto.open .edit { display: block; }
+.field { margin-top: 14px; }
+.field > span { display: block; font-size: 13px; color: var(--muted); margin: 0 2px 6px; }
+.seg { display: flex; background: var(--fill); border-radius: 10px; padding: 2px; }
+.seg button { flex: 1; padding: 8px 4px; font-size: 14px; border-radius: 8px; font-weight: 500; }
+.seg button.on { background: var(--card); box-shadow: 0 1px 3px rgba(0,0,0,.18); }
+.seg button small { display: block; font-size: 11px; color: var(--muted); font-weight: 400; }
+.days { display: flex; justify-content: space-between; }
+.days button { width: 38px; height: 38px; border-radius: 50%; background: var(--fill); font-size: 14px; font-weight: 600; }
+.days button.on { background: var(--accent); color: #fff; }
+input[type=time] { font: inherit; color: var(--text); background: var(--fill); border: 0; border-radius: 10px;
+  padding: 8px 12px; width: 100%; -webkit-appearance: none; text-align: left; }
+.rowend { display: flex; justify-content: space-between; align-items: center; margin-top: 18px; }
+.del { color: var(--danger); font-size: 15px; padding: 6px 0; }
+.add { width: 100%; padding: 15px; border-radius: 18px; background: var(--card); color: var(--accent); font-weight: 600; }
+
+.switch { position: relative; width: 51px; height: 31px; flex: none; margin-left: auto; }
+.switch input { opacity: 0; width: 0; height: 0; position: absolute; }
+.switch span { position: absolute; inset: 0; background: var(--fill); border-radius: 31px; transition: .2s; }
+.switch span::before { content: ""; position: absolute; width: 27px; height: 27px; left: 2px; top: 2px;
+  background: #fff; border-radius: 50%; transition: .2s; box-shadow: 0 2px 4px rgba(0,0,0,.25); }
+.switch input:checked + span { background: var(--on); }
+.switch input:checked + span::before { transform: translateX(20px); }
+
+.list div { display: flex; justify-content: space-between; gap: 10px; padding: 9px 0; border-top: 1px solid var(--line); font-size: 15px; }
+.list div:first-child { border-top: 0; padding-top: 0; } .list div:last-child { padding-bottom: 0; }
+.list .m { color: var(--muted); white-space: nowrap; }
+.fail { color: var(--danger); }
+details summary { list-style: none; cursor: pointer; color: var(--muted); font-size: 15px; margin: 22px 6px 8px; }
+details summary::-webkit-details-marker { display: none; }
+.setup p { margin: 0 0 10px; font-size: 15px; } .setup ol { margin: 0; padding-left: 20px; font-size: 15px; color: var(--muted); }
+.toast { position: fixed; left: 50%; bottom: calc(24px + env(safe-area-inset-bottom)); transform: translateX(-50%);
+  background: var(--text); color: var(--bg); padding: 10px 18px; border-radius: 20px; font-size: 15px;
+  opacity: 0; transition: .25s; pointer-events: none; white-space: nowrap; }
+.toast.show { opacity: .94; }
+</style>
+</head>
+<body>
+<main>
+  <svg width="0" height="0" style="position:absolute">
+    <symbol id="i-curtain" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3h18M5 3v18M19 3v18M5 3c0 6 3 12 6 18M19 3c0 6-3 12-6 18"/></symbol>
+    <symbol id="i-lamp" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-4 10.5c.7.7 1 1.5 1 2.5h6c0-1 .3-1.8 1-2.5A6 6 0 0 0 12 3z"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+    <symbol id="i-sensor" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="4"/><path d="M8 14c1.2-2 2.8-2 4 0s2.8 2 4 0"/></symbol>
+    <symbol id="i-music" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l11-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="17" cy="16" r="3"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24" fill="currentColor"><path d="M7 4.5v15a1 1 0 0 0 1.5.9l12-7.5a1 1 0 0 0 0-1.8l-12-7.5A1 1 0 0 0 7 4.5z"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4.5" height="16" rx="1.2"/><rect x="13.5" y="4" width="4.5" height="16" rx="1.2"/></symbol>
+    <symbol id="i-next" viewBox="0 0 24 24" fill="currentColor"><path d="M4 5.5v13a1 1 0 0 0 1.6.8l9-6.5a1 1 0 0 0 0-1.6l-9-6.5A1 1 0 0 0 4 5.5z"/><rect x="17" y="5" width="3" height="14" rx="1"/></symbol>
+    <symbol id="i-chev" viewBox="0 0 8 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 1l6 6-6 6"/></symbol>
+    <symbol id="i-back" viewBox="0 0 12 20" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M10 2L2 10l8 8"/></symbol>
+  </svg>
+
+  <!-- HOME -->
+  <section class="view" id="v-home">
+    <h1>Home</h1>
+    <p class="sub" id="sunline">&nbsp;</p>
+    <div class="tiles">
+      <button class="tile" data-go="curtain">
+        <div class="ico"><svg><use href="#i-curtain"/></svg></div>
+        <div><div class="name">Curtain</div><div class="st" id="t-curtain">–</div></div>
+        <svg class="chev" width="8" height="14"><use href="#i-chev"/></svg>
+      </button>
+      <button class="tile" data-go="lamp" id="tile-lamp">
+        <div class="ico"><svg><use href="#i-lamp"/></svg></div>
+        <div><div class="name">Lamp</div><div class="st" id="t-lamp">–</div></div>
+        <svg class="chev" width="8" height="14"><use href="#i-chev"/></svg>
+      </button>
+      <button class="tile" data-go="music" id="tile-music">
+        <div class="ico"><svg><use href="#i-music"/></svg></div>
+        <div class="tclip"><div class="name">Music</div><div class="st" id="t-music">–</div></div>
+        <svg class="chev" width="8" height="14"><use href="#i-chev"/></svg>
+      </button>
+      <button class="tile" data-go="autos">
+        <div class="ico"><svg><use href="#i-clock"/></svg></div>
+        <div><div class="name">Automations</div><div class="st" id="t-autos">–</div></div>
+        <svg class="chev" width="8" height="14"><use href="#i-chev"/></svg>
+      </button>
+    </div>
+    <button class="morerow" data-go="other">
+      <svg class="mi"><use href="#i-sensor"/></svg><span>Other devices</span><i class="alert" id="o-alert"></i>
+      <svg class="chev" width="8" height="14"><use href="#i-chev"/></svg>
+    </button>
+    <details id="histbox"><summary>Recent activity ›</summary><div class="card list" id="history"></div></details>
+  </section>
+
+  <!-- CURTAIN -->
+  <section class="view" id="v-curtain">
+    <div class="top"><button class="back" data-go="home"><svg><use href="#i-back"/></svg>Home</button></div>
+    <h1>Curtain</h1>
+    <div class="card">
+      <div class="window"><div class="panel l" id="pl"></div><div class="panel r" id="pr"></div><div class="rod"></div></div>
+      <div class="bigstate"><b id="c-state">–</b><div id="c-meta"></div></div>
+      <div class="pair">
+        <button class="btn primary" data-curtain="open">Open</button>
+        <button class="btn primary" data-curtain="close">Close</button>
+      </div>
+      <div class="slider" id="c-slider"><div class="fill"></div><div class="txt"><span>Position</span><span class="val"></span></div></div>
+    </div>
+    <div class="label">Automations</div>
+    <div id="c-autos"></div>
+  </section>
+
+  <!-- LAMP -->
+  <section class="view" id="v-lamp">
+    <div class="top"><button class="back" data-go="home"><svg><use href="#i-back"/></svg>Home</button></div>
+    <h1>Lamp</h1>
+    <div id="lamp-ready">
+      <div class="card">
+        <button class="bulb" id="bulb"><svg><use href="#i-lamp"/></svg></button>
+        <div class="bigstate"><b id="l-state">–</b><div id="l-meta"></div></div>
+        <div class="zones" id="l-zones">
+          <button data-zone="top"><b>Top</b><small>Color</small></button>
+          <button data-zone="middle"><b>Middle</b><small>Ambient</small></button>
+          <button data-zone="bottom"><b>Bottom</b><small>White</small></button>
+        </div>
+        <div class="slider lamp" id="l-slider"><div class="fill"></div><div class="txt"><span>Brightness</span><span class="val"></span></div></div>
+        <div class="hint" id="l-hint">Colors apply to the top light</div>
+        <div class="chips" id="l-colors"></div>
+      </div>
+      <div class="label rowlabel">Favorites <button id="p-edit">Edit</button></div>
+      <div class="presets" id="p-grid"></div>
+      <div class="card savebox" id="p-save" hidden>
+        <input id="p-name" maxlength="24" placeholder="Name this look" autocomplete="off">
+        <div class="pair"><button class="btn" id="p-cancel">Cancel</button><button class="btn primary" id="p-ok">Save</button></div>
+      </div>
+      <div class="label">Automations</div>
+      <div id="l-autos"></div>
+    </div>
+    <div id="lamp-setup" class="card setup">
+      <p><b>Looking for a Govee lamp…</b> It shows up here automatically within a minute once one of these is done:</p>
+      <ol>
+        <li>Govee app → your lamp → ⚙️ → turn on <b>LAN Control</b> (recommended), or</li>
+        <li>Govee app → Profile → ⚙️ → <b>Apply for API Key</b>, then save it as <code>~/.config/nofuss-home/govee.key</code>.</li>
+      </ol>
+    </div>
+  </section>
+
+  <!-- MUSIC -->
+  <section class="view" id="v-music">
+    <div class="top"><button class="back" data-go="home"><svg><use href="#i-back"/></svg>Home</button></div>
+    <h1>Music</h1>
+    <div class="card np">
+      <div class="art" id="m-art"><svg><use href="#i-music"/></svg><img id="m-img" alt=""></div>
+      <div class="np-t" id="m-title">–</div>
+      <div class="np-a" id="m-artist">&nbsp;</div>
+      <div class="ctrls">
+        <button class="cb" id="m-prev" aria-label="Previous"><svg style="transform:scaleX(-1)"><use href="#i-next"/></svg></button>
+        <button class="cb big" id="m-pp" aria-label="Play/Pause"><svg><use href="#i-play"/></svg></button>
+        <button class="cb" id="m-next" aria-label="Next"><svg><use href="#i-next"/></svg></button>
+      </div>
+      <div class="slider music" id="m-vol"><div class="fill"></div><div class="txt"><span>Volume</span><span class="val"></span></div></div>
+      <div class="devname" id="m-spk"></div>
+    </div>
+    <div class="label rowlabel">Playlists <button id="m-shuf">Shuffle: off</button></div>
+    <div class="card plist" id="m-lists"><div><span class="m">Loading…</span></div></div>
+  </section>
+
+  <!-- OTHER DEVICES -->
+  <section class="view" id="v-other">
+    <div class="top"><button class="back" data-go="home"><svg><use href="#i-back"/></svg>Home</button></div>
+    <h1>Other devices</h1>
+    <div id="o-list"></div>
+  </section>
+
+  <!-- AUTOMATIONS -->
+  <section class="view" id="v-autos">
+    <div class="top"><button class="back" data-go="home"><svg><use href="#i-back"/></svg>Home</button></div>
+    <h1>Automations</h1>
+    <p class="sub" id="a-sub">&nbsp;</p>
+    <div id="a-list"></div>
+    <button class="add" id="a-add">+ New automation</button>
+  </section>
+</main>
+<div class="toast" id="toast"></div>
+
+
+<script>
+const $ = (id) => document.getElementById(id);
+/* Haptics.
+   Android: navigator.vibrate. iOS Safari has no vibration API, but toggling a native <input switch>
+   plays the system tick — only when a real finger taps its <label>. So every button gets an invisible
+   label overlay wired to a hidden switch (technique from github.com/tijnjh/ios-haptics). */
+const IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+function haptic(kind = "light") {
+  if (navigator.vibrate) navigator.vibrate(kind === "heavy" ? 25 : 10);  // iOS gets its tick from armHaptics()
+}
+function armHaptics(root = document) {
+  if (!IOS) return;
+  root.querySelectorAll("button, .preset .x").forEach(el => {
+    if (el.querySelector(":scope > [data-haptic]")) return;
+    const label = document.createElement("label");
+    label.dataset.haptic = ""; label.setAttribute("aria-hidden", "true");
+    Object.assign(label.style, { position: "absolute", inset: "0", touchAction: "inherit", borderRadius: "inherit" });
+    label.style.setProperty("-webkit-tap-highlight-color", "transparent");
+    const sw = document.createElement("input");
+    sw.type = "checkbox"; sw.setAttribute("switch", "");
+    Object.assign(sw.style, { position: "absolute", width: "1px", height: "1px", margin: "0", visibility: "hidden" });
+    sw.addEventListener("click", (e) => e.stopPropagation());  // the label's re-dispatched click must not double-fire handlers
+    label.append(sw);
+    if (getComputedStyle(el).position === "static") el.style.position = "relative";
+    el.append(label);
+  });
+}
+document.addEventListener("click", (e) => { if (e.target.closest("button")) haptic(); }, true);
+const DAYS = ["M", "T", "W", "T", "F", "S", "S"];
+const COLORS = [
+  { k: 2700, css: "#ffb46b", name: "Warm" }, { k: 4000, css: "#ffe4c4", name: "Neutral" }, { k: 6500, css: "#eaf2ff", name: "Cool" },
+  { rgb: [255, 60, 40], css: "#ff3c28" }, { rgb: [255, 140, 0], css: "#ff8c00" }, { rgb: [60, 200, 90], css: "#3cc85a" },
+  { rgb: [40, 110, 255], css: "#286eff" }, { rgb: [170, 70, 255], css: "#aa46ff" },
+];
+let S = null;            // last server snapshot
+let openAuto = null;     // id of the automation card being edited
+let curtainHold = null;  // {target, until}: keep the user's target on screen while the curtain moves
+let lampHold = 0;        // timestamp until which local lamp edits win over polled state
+
+function toast(msg) {
+  const t = $("toast"); t.textContent = msg; t.classList.add("show");
+  clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove("show"), 2000);
+}
+async function api(path, method = "GET", body) {
+  const r = await fetch(path, { method, headers: body ? { "Content-Type": "application/json" } : {}, body: body && JSON.stringify(body) });
+  if (!r.ok) throw new Error(await r.text() || r.status);
+  return r.json();
+}
+
+/* ---------- navigation ---------- */
+function go(view, push = true) {
+  document.querySelectorAll(".view").forEach(v => v.classList.toggle("active", v.id === "v-" + view));
+  if (push) history.pushState({ view }, "", view === "home" ? "#" : "#" + view);
+  openAuto = null; window.scrollTo(0, 0); render();
+  if (view === "music" || view === "autos") loadPlaylists();
+}
+document.addEventListener("click", (e) => { const b = e.target.closest("[data-go]"); if (b) go(b.dataset.go); });
+window.onpopstate = () => go(location.hash.slice(1) || "home", false);
+
+/* ---------- slider widget ---------- */
+function makeSlider(el, { onCommit, fmt }) {
+  const fill = el.querySelector(".fill"), val = el.querySelector(".val");
+  const w = { dragging: false, value: 0 };
+  w.set = (v) => { w.value = v; fill.style.width = v + "%"; val.textContent = fmt(v); };
+  const at = (e) => { const r = el.getBoundingClientRect(); return Math.round(Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)) * 20) * 5; };
+  el.addEventListener("pointerdown", (e) => { w.dragging = true; el.setPointerCapture(e.pointerId); w.set(at(e)); });
+  el.addEventListener("pointermove", (e) => { if (w.dragging) w.set(at(e)); });
+  const end = () => { if (!w.dragging) return; w.dragging = false; haptic(); onCommit(w.value); };
+  el.addEventListener("pointerup", end); el.addEventListener("pointercancel", end);
+  return w;
+}
+
+const cSlider = makeSlider($("c-slider"), { fmt: v => v + "% open", onCommit: v => curtain({ action: "position", position: v }, v) });
+const lSlider = makeSlider($("l-slider"), { fmt: v => v + "%", onCommit: v => lamp({ brightness: Math.max(1, v) }) });
+
+/* ---------- actions ---------- */
+async function curtain(body, target) {
+  curtainHold = { target, until: Date.now() + 40000 };
+  render();
+  try { await api("/api/curtain", "POST", body); } catch (e) { toast("Error: " + e.message); curtainHold = null; }
+}
+document.querySelectorAll("[data-curtain]").forEach(b => b.onclick = () =>
+  curtain({ action: b.dataset.curtain }, b.dataset.curtain === "open" ? 100 : 0));
+
+async function lamp(change) {
+  lampHold = Date.now() + (change.zones || change.rgb || change.kelvin ? 70000 : 8000);
+  Object.assign(S.lamp, change); if (change.zones) S.lamp.zones = { ...(S.lamp.zones || {}), ...change.zones };
+  if (change.kelvin) S.lamp.rgb = null; if (change.rgb) S.lamp.kelvin = null;
+  if (!("on" in change) && !change.zones) S.lamp.on = true;
+  render();
+  try { const r = await api("/api/lamp", "POST", change); if (!r.ok) toast("Lamp did not respond"); }
+  catch (e) { toast("Error: " + e.message); }
+}
+$("l-zones").onclick = (e) => {
+  const b = e.target.closest("[data-zone]"); if (!b) return;
+  const zones = S.lamp.zones || {}, turnOn = !(S.lamp.on && zones[b.dataset.zone]);
+  b.classList.add("pending");
+  const change = { zones: { [b.dataset.zone]: turnOn } };
+  lamp(turnOn && !S.lamp.on ? { on: true, ...change } : change).finally(() => b.classList.remove("pending"));
+};
+$("bulb").onclick = () => lamp({ on: !S.lamp.on });
+
+/* ---------- lamp favorites ---------- */
+let presetEdit = false;
+let presetBusy = null;   // id of the favorite being applied
+function presetMatches(p, l) {
+  if (!l.on || l.brightness !== p.brightness) return false;
+  const z = l.zones || {};
+  if (["top", "middle", "bottom"].some(k => !!z[k] !== !!p.zones?.[k])) return false;
+  return p.rgb ? !!l.rgb && l.rgb.join() === p.rgb.join() : !l.rgb && (!p.kelvin || Math.abs((l.kelvin || 0) - p.kelvin) < 150);
+}
+function presetDesc(p) {
+  const z = ["top", "middle", "bottom"].filter(k => p.zones?.[k]).map(k => k[0].toUpperCase() + k.slice(1));
+  return `${z.join(" + ") || "Lamp"} · ${p.brightness}%`;
+}
+function presetColor(p) { return p.rgb ? `rgb(${p.rgb.join(",")})` : lampColor({ kelvin: p.kelvin }); }
+function renderPresets() {
+  if (gesture?.dragging) return;  // don't rebuild under a finger
+  $("p-edit").textContent = presetEdit ? "Done" : "Edit";
+  $("p-grid").classList.toggle("editing", presetEdit);
+  const html = S.presets.map(p => {
+    const busy = presetBusy === p.id, active = !presetBusy && presetMatches(p, S.lamp);
+    const corner = presetEdit ? `<span class="x" data-pdel="${p.id}">×</span>` : active ? `<span class="check">✓</span>` : `<span class="dot"></span>`;
+    return `<button class="preset ${busy ? "busy" : ""} ${active ? "active" : ""}" data-preset="${p.id}" style="--c:${presetColor(p)}">
+      <span class="em">${p.icon || "⭐"}</span><span class="nm">${p.name}</span>
+      <span class="ds">${busy ? "Applying…" : presetDesc(p)}</span>${corner}</button>`;
+  }).join("") + (presetEdit ? "" : `<button class="preset add" id="p-add">+ Save current</button>`);
+  if ($("p-grid")._html !== html) { $("p-grid").innerHTML = html; $("p-grid")._html = html; armHaptics($("p-grid")); }  // keep taps alive between polls
+}
+/* Favorites gestures: long press → edit mode (wiggle); in edit mode drag to reorder; tap outside → done. */
+let pressTimer = null, suppressClickUntil = 0, swallowClick = false;
+let gesture = null;     // finger on a tile: {id, x0, y0, grabX, grabY, dragging, el}
+let outsideTap = null;  // finger down outside the tiles while editing
+const presetEl = (id) => $("p-grid").querySelector(`[data-preset="${CSS.escape(id)}"]`);
+
+$("p-grid").addEventListener("pointerdown", (e) => {
+  const b = e.target.closest("[data-preset]");
+  if (!b || e.target.closest(".x")) return;
+  const r = b.getBoundingClientRect();
+  gesture = { id: b.dataset.preset, x0: e.clientX, y0: e.clientY, grabX: e.clientX - r.left, grabY: e.clientY - r.top, dragging: false };
+  if (!presetEdit) pressTimer = setTimeout(() => {
+    suppressClickUntil = Date.now() + 1500; presetEdit = true; haptic("heavy"); render();
+  }, 480);
+});
+document.addEventListener("pointermove", (e) => {
+  if (!gesture) return;
+  const dist = Math.hypot(e.clientX - gesture.x0, e.clientY - gesture.y0);
+  if (!presetEdit) { if (dist > 8) { clearTimeout(pressTimer); gesture = null; } return; }  // that was a scroll
+  if (!gesture.dragging) {
+    if (dist < 8) return;
+    gesture.el = presetEl(gesture.id);
+    if (!gesture.el) { gesture = null; return; }
+    gesture.dragging = true; gesture.el.classList.add("dragging"); haptic();
+  }
+  moveDragged(e.clientX, e.clientY);
+});
+function moveDragged(x, y) {
+  const el = gesture.el, grid = $("p-grid");
+  const over = document.elementFromPoint(x, y)?.closest("[data-preset]");
+  if (over && over !== el && grid.contains(over)) {
+    const tiles = [...grid.querySelectorAll("[data-preset]")];
+    grid.insertBefore(el, tiles.indexOf(el) < tiles.indexOf(over) ? over.nextSibling : over);
+    haptic();
+  }
+  el.style.transform = "";  // measure the slot it now sits in, then pin it under the finger
+  const r = el.getBoundingClientRect();
+  el.style.transform = `translate(${x - gesture.grabX - r.left}px, ${y - gesture.grabY - r.top}px) scale(1.06)`;
+}
+async function endGesture() {
+  clearTimeout(pressTimer);
+  if (suppressClickUntil > Date.now()) suppressClickUntil = Date.now() + 350;  // release after a long press is not a tap
+  const g = gesture; gesture = null;
+  if (!g?.dragging) return;
+  suppressClickUntil = Date.now() + 350;
+  g.el.classList.remove("dragging"); g.el.style.transform = "";
+  const ids = [...$("p-grid").querySelectorAll("[data-preset]")].map(t => t.dataset.preset);
+  S.presets = ids.map(id => S.presets.find(p => p.id === id)).filter(Boolean);
+  $("p-grid")._html = null; render();
+  try { S = await api("/api/presets/order", "POST", { ids }); render(); } catch (err) { toast("Error: " + err.message); }
+}
+document.addEventListener("pointerup", endGesture);
+document.addEventListener("pointercancel", endGesture);
+// while editing, a finger on a tile drags it instead of scrolling the page
+document.addEventListener("touchmove", (e) => { if (gesture && presetEdit) e.preventDefault(); }, { passive: false });
+$("p-grid").addEventListener("contextmenu", (e) => e.preventDefault());
+
+// tap anywhere outside the tiles = Done (iOS sends no click for plain areas, so watch the raw pointer)
+document.addEventListener("pointerdown", (e) => {
+  outsideTap = presetEdit && !e.target.closest("#p-grid [data-preset], #p-edit") ? { x: e.clientX, y: e.clientY } : null;
+}, true);
+document.addEventListener("pointerup", (e) => {
+  if (!outsideTap) return;
+  const moved = Math.hypot(e.clientX - outsideTap.x, e.clientY - outsideTap.y) > 10;  // a scroll keeps edit mode
+  outsideTap = null;
+  if (moved || !presetEdit) return;
+  presetEdit = false; render(); haptic();
+  swallowClick = true; setTimeout(() => { swallowClick = false; }, 400);  // the same tap must not press anything
+}, true);
+window.addEventListener("click", (e) => {
+  if (swallowClick) { swallowClick = false; e.preventDefault(); e.stopPropagation(); }
+}, true);
+$("p-grid").onclick = async (e) => {
+  if (Date.now() < suppressClickUntil) return;
+  const del = e.target.closest("[data-pdel]");
+  if (del) {
+    haptic("heavy");
+    const id = del.dataset.pdel;
+    S.presets = S.presets.filter(p => p.id !== id); render();   // vanish immediately
+    try { S = await api("/api/presets/" + id, "DELETE"); } catch (err) { toast("Error: " + err.message); }
+    if (!S.presets.length) presetEdit = false;
+    render(); return;
+  }
+  if (presetEdit) return;
+  if (e.target.closest("#p-add")) { $("p-save").hidden = false; $("p-name").value = ""; $("p-name").focus(); return; }
+  const b = e.target.closest("[data-preset]"); if (!b) return;
+  const p = S.presets.find(x => x.id === b.dataset.preset);
+  haptic();
+  b.classList.add("pressed");
+  presetBusy = p.id;
+  lampHold = Date.now() + 70000;
+  Object.assign(S.lamp, { on: true, brightness: p.brightness, zones: { ...p.zones }, rgb: p.rgb || null, kelvin: p.rgb ? null : p.kelvin || null });
+  render();
+  try { const r = await api(`/api/presets/${p.id}/apply`, "POST", {}); if (r.ok) haptic(); else toast("Lamp did not respond"); }
+  catch (err) { toast("Error: " + err.message); }
+  presetBusy = null; render();
+};
+$("p-edit").onclick = () => { presetEdit = !presetEdit; render(); };
+$("p-cancel").onclick = () => { $("p-save").hidden = true; };
+$("p-ok").onclick = async () => {
+  const name = $("p-name").value.trim(); if (!name) return $("p-name").focus();
+  try { S = await api("/api/presets", "POST", { name }); $("p-save").hidden = true; render(); toast("Saved " + name); }
+  catch (err) { toast("Error: " + err.message); }
+};
+$("p-name").onkeydown = (e) => { if (e.key === "Enter") $("p-ok").click(); };
+
+/* ---------- automations ---------- */
+const sunAt = (trig) => trig === "sunset" ? S.sun.sunset : S.sun.sunrise;
+function autoTitle(a) {
+  if (a.device === "music") return a.action === "pause" ? "Pause music" : "Play " + (a.playlist_name || "music");
+  if (a.device === "curtain") return a.action === "open" ? "Open curtain" : a.action === "close" ? "Close curtain" : `Curtain to ${a.position}%`;
+  return a.action === "off" ? "Lamp off" : "Lamp on" + (a.brightness ? ` · ${a.brightness}%` : "");
+}
+function daysText(days) {
+  if (days.length === 7) return "Every day";
+  const k = days.join(); if (k === "0,1,2,3,4") return "Weekdays"; if (k === "5,6") return "Weekends";
+  return days.map(d => ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"][d]).join(", ");
+}
+function whenText(a) {
+  if (a.trigger === "time") return a.time;
+  const t = S.sun[a.trigger], name = a.trigger === "sunset" ? "Sunset" : "Sunrise";
+  return t ? `${name} (${t})` : `${name} (set location)`;
+}
+function dayWord(iso) {
+  const d = new Date(iso), now = new Date();
+  const days = Math.round((new Date(d.toDateString()) - new Date(now.toDateString())) / 864e5);
+  return days === 0 ? "today" : days === 1 ? "tomorrow" : d.toLocaleDateString("en-GB", { weekday: "short" });
+}
+function musicSuffix(a) { return a.device !== "music" && a.music_on && a.music_uri ? ` · ♫ ${a.music_name || "music"}` : ""; }
+function subText(a) { return baseSub(a) + musicSuffix(a); }
+function baseSub(a) {
+  if (!a.once) return `${daysText(a.days)} · ${whenText(a)}`;
+  return a.enabled && a.next ? `Once · ${dayWord(a.next)} ${a.next.slice(11, 16)}` : `Once · ${whenText(a)} · off`;
+}
+function nextText(a) {
+  if (!a.next) return a.enabled ? "" : "Off";
+  const d = new Date(a.next), now = new Date(), tm = d.toTimeString().slice(0, 5);
+  const days = Math.round((new Date(d.toDateString()) - new Date(now.toDateString())) / 864e5);
+  return "Next " + (days === 0 ? "today" : days === 1 ? "tomorrow" : d.toLocaleDateString("en-GB", { weekday: "short" })) + " " + tm;
+}
+function playlistOptions(uri, name, emptyLabel) {
+  return `${emptyLabel ? `<option value="">${emptyLabel}</option>` : ""}
+    ${(playlists || []).map(p => `<option value="${p.uri}" ${p.uri === uri ? "selected" : ""}>${esc(p.name)}</option>`).join("")}
+    ${uri && !(playlists || []).some(p => p.uri === uri) ? `<option value="${uri}" selected>${esc(name || "Playlist")}</option>` : ""}`;
+}
+function autoCard(a) {
+  const icon = a.device === "curtain" ? "i-curtain" : a.device === "music" ? "i-music" : "i-lamp";
+  const val = (f) => a[f] ?? { music_on: 0, music_shuffle: 1, music_volume: 20 }[f];
+  const seg = (field, opts) => `<div class="seg" data-f="${field}">${opts.map(([v, l, s]) =>
+    `<button data-v="${v}" class="${String(val(field)) === String(v) ? "on" : ""}">${l}${s ? `<small>${s}</small>` : ""}</button>`).join("")}</div>`;
+  const actionOpts = a.device === "curtain" ? [["open", "Open"], ["close", "Close"]]
+    : a.device === "music" ? [["play", "Play"], ["pause", "Pause"]] : [["on", "On"], ["off", "Off"]];
+  const musicFields = a.device === "music" && a.action === "play" ? `
+      <div class="field"><span>Playlist</span><select class="autosel" data-uri>
+        <option value="">Resume what was playing</option>
+        ${(playlists || []).map(p => `<option value="${p.uri}" ${p.uri === a.uri ? "selected" : ""}>${esc(p.name)}</option>`).join("")}
+        ${a.uri && !(playlists || []).some(p => p.uri === a.uri) ? `<option value="${a.uri}" selected>${esc(a.playlist_name || "Playlist")}</option>` : ""}
+      </select></div>
+      <div class="field"><span>Volume</span>${seg("volume", [[10, "10%"], [20, "20%"], [30, "30%"], [40, "40%"], [60, "60%"]])}</div>
+      <div class="field"><span>Songs</span><div class="seg" data-shuffle><button data-v="0" class="${a.shuffle ? "" : "on"}">In order</button><button data-v="1" class="${a.shuffle ? "on" : ""}">Random</button></div></div>` : "";
+  const alsoMusic = a.device !== "music" ? `
+      <div class="field"><span>Also play music</span>${seg("music_on", [[0, "Off"], [1, "On"]])}</div>
+      ${a.music_on ? `
+      <div class="field"><select class="autosel" data-muri>${playlistOptions(a.music_uri, a.music_name, a.music_uri ? "" : "Choose a playlist…")}</select></div>
+      <div class="field"><span>Volume</span>${seg("music_volume", [[10, "10%"], [20, "20%"], [30, "30%"], [40, "40%"], [60, "60%"]])}</div>
+      <div class="field"><span>Songs</span>${seg("music_shuffle", [[1, "Random"], [0, "In order"]])}</div>` : ""}` : "";
+  return `<div class="auto ${a.enabled ? "" : "off"} ${openAuto === a.id ? "open" : ""}" data-id="${a.id}">
+    <div class="head" data-toggle>
+      <div class="ico"><svg><use href="#${icon}"/></svg></div>
+      <div><div class="t">${autoTitle(a)}</div><div class="d">${subText(a)}</div></div>
+      <label class="switch" data-stop><input type="checkbox" switch data-enabled ${a.enabled ? "checked" : ""}><span></span></label>
+    </div>
+    <div class="edit">
+      <div class="field"><span>Device</span>${seg("device", [["curtain", "Curtain"], ["lamp", "Lamp"], ["music", "Music"]])}</div>
+      <div class="field"><span>Action</span>${seg("action", actionOpts)}</div>${musicFields}${alsoMusic}
+      <div class="field"><span>When</span>${seg("trigger", [["time", "Time"], ["sunrise", "Sunrise", S.sun.sunrise || "no location"], ["sunset", "Sunset", S.sun.sunset || "no location"]])}</div>
+      ${a.trigger === "time" ? `<div class="field"><input type="time" data-time value="${a.time}"></div>` : ""}
+      <div class="field"><span>Repeat</span><div class="seg" data-once><button data-v="1" class="${a.once ? "on" : ""}">Once</button><button data-v="0" class="${a.once ? "" : "on"}">Repeat</button></div></div>
+      ${a.once ? "" : `<div class="field"><div class="days">${DAYS.map((d, i) =>
+        `<button data-day="${i}" class="${a.days.includes(i) ? "on" : ""}">${d}</button>`).join("")}</div></div>`}
+      <div class="rowend"><button class="del" data-del>Delete</button><span class="d">${nextText(a)}</span></div>
+    </div>
+  </div>`;
+}
+async function saveAuto(id, patch) {
+  try { S = await api("/api/automations/" + id, "POST", patch); render(); }
+  catch (e) { toast("Error: " + e.message); }
+}
+function bindAutos(container) {
+  container.onclick = async (e) => {
+    const card = e.target.closest(".auto"); if (!card) return;
+    const id = card.dataset.id, a = S.automations.find(x => x.id === id);
+    if (e.target.closest("[data-stop]")) return;
+    if (e.target.closest("[data-toggle]")) { openAuto = openAuto === id ? null : id; render(); return; }
+    const shufBtn = e.target.closest("[data-shuffle] button");
+    if (shufBtn) return saveAuto(id, { shuffle: shufBtn.dataset.v === "1" });
+    const onceBtn = e.target.closest("[data-once] button");
+    if (onceBtn) return saveAuto(id, { once: onceBtn.dataset.v === "1", enabled: true });
+    const segBtn = e.target.closest(".seg button");
+    if (segBtn) {
+      const f = segBtn.parentElement.dataset.f;
+      const patch = { [f]: f.startsWith("music_") ? +segBtn.dataset.v : segBtn.dataset.v };
+      if (f === "music_on" && patch.music_on) Object.assign(patch, { music_volume: a.music_volume ?? 20, music_shuffle: a.music_shuffle ?? 1 });
+      if (f === "device") patch.action = { curtain: "open", lamp: "on", music: "play" }[segBtn.dataset.v];
+      return saveAuto(id, patch);
+    }
+    const day = e.target.closest("[data-day]");
+    if (day) {
+      const d = +day.dataset.day, days = a.days.includes(d) ? a.days.filter(x => x !== d) : [...a.days, d];
+      if (!days.length) return toast("Pick at least one day");
+      return saveAuto(id, { days });
+    }
+    if (e.target.closest("[data-del]")) {
+      S = await api("/api/automations/" + id, "DELETE"); openAuto = null; render(); toast("Deleted");
+    }
+  };
+  container.onchange = (e) => {
+    const card = e.target.closest(".auto"); if (!card) return;
+    if (e.target.matches("[data-enabled]")) saveAuto(card.dataset.id, { enabled: e.target.checked });
+    if (e.target.matches("select[data-muri]") && e.target.value) {
+      const a = S.automations.find(x => x.id === card.dataset.id);
+      saveAuto(card.dataset.id, { music_on: 1, music_uri: e.target.value, music_name: e.target.selectedOptions[0].textContent,
+                                   music_volume: a.music_volume ?? 20, music_shuffle: a.music_shuffle ?? 1 });
+    }
+    if (e.target.matches("select[data-uri]")) {
+      const opt = e.target.selectedOptions[0];
+      saveAuto(card.dataset.id, { uri: e.target.value || null, playlist_name: e.target.value ? opt.textContent : "" });
+    }
+    if (e.target.matches("[data-time]") && e.target.value) {
+      const a = S.automations.find(x => x.id === card.dataset.id);
+      saveAuto(card.dataset.id, a.once ? { time: e.target.value, enabled: true } : { time: e.target.value });
+    }
+  };
+}
+["a-list", "c-autos", "l-autos"].forEach(id => bindAutos($(id)));
+async function addAuto(device) {
+  try {
+    S = await api("/api/automations", "POST", device === "lamp" ? { device, action: "on", trigger: "sunset", time: "20:00", days: [0,1,2,3,4,5,6] }
+      : { device, action: "open", trigger: "time", time: "07:30", once: true, days: [0,1,2,3,4,5,6] });
+    openAuto = S.automations[S.automations.length - 1].id; render();
+  } catch (e) { toast("Error: " + e.message); }
+}
+$("a-add").onclick = () => addAuto("curtain");
+
+/* ---------- render ---------- */
+function curtainView() {
+  const c = S.curtain;
+  let pos = c.position;
+  if (curtainHold) {
+    const arrived = pos != null && Math.abs(pos - curtainHold.target) <= 3 && !c.moving && !c.busy;
+    if (arrived || Date.now() > curtainHold.until) curtainHold = null;
+  }
+  const shown = curtainHold ? curtainHold.target : pos;
+  const moving = !!curtainHold || c.moving || c.busy;
+  return { pos, shown, moving };
+}
+function curtainWord(p) { return p == null ? "–" : p <= 2 ? "Closed" : p >= 98 ? "Open" : `${p}% open`; }
+function lampColor(l) {
+  if (l.rgb) return `rgb(${l.rgb.join(",")})`;
+  const k = l.kelvin || 3000; return k < 3300 ? "#ffb46b" : k < 5000 ? "#ffe4c4" : "#eaf2ff";
+}
+
+/* ---------- music ---------- */
+let playlists = null, shuffle = false, musicHold = 0;
+const mVol = makeSlider($("m-vol"), { fmt: v => v + "%", onCommit: v => music({ action: "volume", volume: v }) });
+async function loadPlaylists(force) {
+  if (playlists && !force) return playlists;
+  try { playlists = await api("/api/music/playlists"); } catch (e) { $("m-lists").innerHTML = `<div><span class="m">Spotify not reachable</span></div>`; return []; }
+  renderPlaylists(); render(); return playlists;
+}
+function renderPlaylists() {
+  if (!playlists) return;
+  const cur = S?.music?.playlist?.uri;
+  $("m-lists").innerHTML = playlists.map(p => `<button data-uri="${p.uri}" class="${p.uri === cur ? "cur" : ""}">
+      ${p.image ? `<img src="${p.image}" alt="" loading="lazy">` : `<span class="ph"></span>`}
+      <span class="tclip"><div class="pn">${esc(p.name)}</div>${p.tracks != null ? `<div class="pc">${p.tracks} songs</div>` : ""}</span></button>`).join("");
+  armHaptics($("m-lists"));
+}
+const esc = (s) => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+async function music(body) {
+  musicHold = Date.now() + 4000;
+  if (body.action === "play" || body.action === "pause") S.music.state = body.action === "play" ? "PLAYING" : "PAUSED_PLAYBACK";
+  if (body.volume != null) S.music.volume = body.volume;
+  render();
+  try { const r = await api("/api/music", "POST", body); if (r.ok) { S.music = r.music; musicHold = 0; render(); } else toast("Sonos did not respond"); }
+  catch (e) { toast("Error: " + e.message); }
+}
+$("m-pp").onclick = () => music({ action: S.music.state === "PLAYING" ? "pause" : "play" });
+$("m-next").onclick = () => music({ action: "next" });
+$("m-prev").onclick = () => music({ action: "previous" });
+$("m-shuf").onclick = () => { shuffle = !shuffle; $("m-shuf").textContent = "Shuffle: " + (shuffle ? "on" : "off"); };
+$("m-lists").onclick = (e) => {
+  const b = e.target.closest("[data-uri]"); if (!b) return;
+  b.classList.add("busy"); S.music.state = "PLAYING";
+  music({ action: "playlist", uri: b.dataset.uri, shuffle }).then(() => renderPlaylists());
+};
+let lastArt = null;
+function renderMusic() {
+  const m = S.music || {}, playing = m.state === "PLAYING";
+  const line = m.title ? `${m.title}${m.artist ? " – " + m.artist : ""}` : "";
+  $("t-music").textContent = m.error && !m.state ? (m.error.includes("no Sonos") ? "No Sonos found" : "Speaker not reachable") : playing ? (line || "Playing") : m.state ? "Paused" + (line ? " · " + line : "") : "–";
+  $("tile-music").classList.toggle("playing", playing);
+  $("m-title").textContent = m.title || (m.state ? "Nothing playing" : "–");
+  $("m-artist").textContent = m.artist || "\u00a0";
+  $("m-pp").querySelector("use").setAttribute("href", playing ? "#i-pause" : "#i-play");
+  if (!mVol.dragging) mVol.set(m.volume ?? 0);
+  $("m-spk").textContent = m.speaker ? "Sonos · " + m.speaker : "";
+  const artKey = m.art ? m.title + "|" + m.album : null;
+  if (artKey !== lastArt) {
+    lastArt = artKey;
+    $("m-art").classList.remove("has");
+    if (artKey) { $("m-img").onload = () => $("m-art").classList.add("has"); $("m-img").src = "/api/music/art?k=" + encodeURIComponent(artKey); }
+  }
+  if (playlists) document.querySelectorAll("#m-lists [data-uri]").forEach(b => b.classList.toggle("cur", b.dataset.uri === m.playlist?.uri));
+}
+
+/* ---------- other devices ---------- */
+function co2Level(ppm) {
+  if (ppm == null) return { c: "var(--muted)", t: "No reading" };
+  if (ppm < 800) return { c: "#34c759", t: "Fresh air" };
+  if (ppm < 1200) return { c: "#ffcc00", t: "OK · ventilate soon" };
+  return { c: "#ff3b30", t: "Open a window" };
+}
+function sparkline(hist) {
+  const pts = hist.filter(h => h[1] != null);
+  if (pts.length < 2) return `<div class="axis"><span>Chart fills in over the next hours</span></div>`;
+  const t0 = pts[0][0], t1 = pts[pts.length - 1][0], vals = pts.map(h => h[1]);
+  const lo = Math.min(400, ...vals), hi = Math.max(1400, ...vals), W = 300, H = 90;
+  const x = t => (t - t0) / Math.max(1, t1 - t0) * W, y = v => H - 4 - (v - lo) / (hi - lo) * (H - 8);
+  const d = pts.map((h, i) => `${i ? "L" : "M"}${x(h[0]).toFixed(1)},${y(h[1]).toFixed(1)}`).join("");
+  const band = (v1, v2, c) => `<rect x="0" y="${y(v2)}" width="${W}" height="${y(v1) - y(v2)}" fill="${c}" opacity=".10"/>`;
+  const hh = t => new Date(t * 1000).toTimeString().slice(0, 5);
+  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${band(lo, 800, "#34c759")}${band(800, 1200, "#ffcc00")}${band(1200, hi, "#ff3b30")}
+    <path d="${d}" fill="none" stroke="var(--text)" stroke-width="2" vector-effect="non-scaling-stroke" stroke-linejoin="round"/></svg>
+    <div class="axis"><span>${hh(t0)}</span><span>CO₂ last ${Math.max(1, Math.round((t1 - t0) / 3600))} h</span><span>${hh(t1)}</span></div>`;
+}
+function renderOther() {
+  const list = S.sensors || [];
+  const worst = Math.max(0, ...list.map(d => d.co2 || 0));
+  $("o-alert").style.display = worst >= 1200 ? "block" : "none";
+  $("o-alert").style.background = co2Level(worst).c;
+  $("o-list").innerHTML = list.length ? list.map(d => {
+    const lv = co2Level(d.co2), ago = d.seen ? Math.round(Date.now() / 1000 - d.seen) : null;
+    return `<div class="card">
+      ${d.co2 != null ? `<div class="co2"><div class="num">${d.co2}<small>ppm CO₂</small></div>
+        <div class="lvl" style="background:color-mix(in srgb, ${lv.c} 22%, transparent);color:${lv.c}">${lv.t}</div></div>` : ""}
+      <div class="stats">
+        <div><b>${d.temp ?? "–"}°</b><span>Temperature</span></div>
+        <div><b>${d.humidity ?? "–"}%</b><span>Humidity</span></div>
+        <div><b>${d.battery ?? "–"}%</b><span>Battery</span></div>
+      </div>
+      ${d.co2 != null ? `<div class="spark">${sparkline(d.history || [])}</div>` : ""}
+      <div class="devname">${d.name} · ${ago == null ? "never seen" : ago < 120 ? "live" : "last seen " + Math.round(ago / 60) + " min ago"}</div>
+    </div>`;
+  }).join("") : `<div class="card list"><div><span class="m">Listening for devices…</span></div></div>`;
+}
+
+function render() {
+  if (!S) return;
+  const cv = curtainView(), l = S.lamp, lampReady = l.backend !== "none";
+
+  renderOther();
+  renderMusic();
+  // home
+  $("sunline").textContent = S.sun.sunrise ? `Sunrise ${S.sun.sunrise} · Sunset ${S.sun.sunset}` : "Tip: set your location in data/settings.json for sunrise & sunset";
+  $("t-curtain").textContent = S.bluetooth === false ? "Allow Bluetooth for Python on the Mac (System Settings)"
+    : !S.curtain.seen && cv.pos == null ? "Looking for a SwitchBot curtain…" : cv.moving ? `Moving to ${cv.shown}%…` : curtainWord(cv.pos) + (S.curtain.battery != null ? ` · battery ${S.curtain.battery}%` : "");
+  $("t-lamp").textContent = !lampReady ? "Needs setup" : l.error && !l.seen ? "Not reachable" : l.on ? `On · ${l.brightness ?? "–"}%` : "Off";
+  $("tile-lamp").classList.toggle("lit", lampReady && !!l.on);
+  const active = S.automations.filter(a => a.enabled && a.next).sort((a, b) => a.next.localeCompare(b.next));
+  $("t-autos").textContent = active.length ? `${active.length} active · ${autoTitle(active[0]).toLowerCase()} ${nextText(active[0]).replace("Next ", "")}` : "None active";
+  $("history").innerHTML = S.history.length ? S.history.map(h =>
+    `<div><span class="${h.text.startsWith("FAILED") ? "fail" : ""}">${h.text}</span><span class="m">${h.at}</span></div>`).join("")
+    : `<div><span class="m">Nothing yet</span></div>`;
+
+  // curtain
+  const w = cv.shown == null ? 50 : 50 - cv.shown * 0.44;
+  $("pl").style.width = $("pr").style.width = w + "%";
+  $("c-state").textContent = cv.moving ? `Moving to ${cv.shown}%` : curtainWord(cv.pos);
+  $("c-meta").textContent = S.curtain.seen ? `Battery ${S.curtain.battery}%` : "Looking for curtain…";
+  if (!cSlider.dragging) cSlider.set(cv.shown ?? 0);
+  const cAutos = S.automations.filter(a => a.device === "curtain");
+  if (!document.activeElement?.matches("input[type=time], select")) {
+    $("c-autos").innerHTML = cAutos.map(autoCard).join("") || `<div class="card list"><div><span class="m">None</span></div></div>`;
+    const lAutos = S.automations.filter(a => a.device === "lamp");
+    $("l-autos").innerHTML = lAutos.map(autoCard).join("") || `<div class="card list"><div><span class="m">None</span></div></div>`;
+    $("a-list").innerHTML = S.automations.map(autoCard).join("");
+  }
+  $("a-sub").textContent = `${active.length} of ${S.automations.length} active`;
+
+  // lamp
+  $("lamp-ready").style.display = lampReady ? "" : "none";
+  $("lamp-setup").style.display = lampReady ? "none" : "";
+  const bulb = $("bulb");
+  bulb.classList.toggle("on", !!l.on);
+  bulb.style.background = l.on ? lampColor(l) : "";
+  bulb.style.setProperty("--glow", l.on ? lampColor(l) : "transparent");
+  $("l-state").textContent = l.on == null ? "–" : l.on ? "On" : "Off";
+  $("l-meta").textContent = l.error && !l.seen ? "Lamp not reachable" : "Tap to switch";
+  if (!lSlider.dragging) lSlider.set(l.brightness ?? 0);
+  $("l-slider").style.opacity = l.on ? 1 : .45;
+  renderPresets();
+  const z = l.zones || {};
+  $("l-zones").style.display = l.cloud && l.zones_supported ? "" : "none";
+  document.querySelectorAll("#l-zones [data-zone]").forEach(b => b.classList.toggle("on", !!l.on && !!z[b.dataset.zone]));
+  $("l-hint").style.display = l.cloud && l.zones_supported && !(l.on && z.top) ? "" : "none";
+  $("l-hint").textContent = "Colors show on the top light — switch it on above";
+  $("l-colors").innerHTML = COLORS.map((c, i) => {
+    const sel = c.k ? l.kelvin && Math.abs(l.kelvin - c.k) < 400 && !l.rgb : l.rgb && l.rgb.join() === c.rgb.join();
+    return `<button class="sw ${sel ? "sel" : ""}" style="background:${c.css}" data-color="${i}" aria-label="${c.name || "color"}"></button>`;
+  }).join("");
+}
+$("l-colors").onclick = (e) => { const b = e.target.closest("[data-color]"); if (!b) return;
+  const c = COLORS[+b.dataset.color]; lamp(c.k ? { kelvin: c.k } : { rgb: c.rgb }); };
+
+const _render = render;
+render = function () { _render(); armHaptics(); };
+
+async function refresh() {
+  try {
+    const fresh = await api("/api/state");
+    if (S && Date.now() < lampHold) fresh.lamp = { ...fresh.lamp, ...pick(S.lamp, ["on", "brightness", "kelvin", "rgb", "zones"]) };
+    if (S && Date.now() < musicHold) fresh.music = S.music;
+    S = fresh; render();
+  } catch { $("sunline").textContent = "Mac mini not reachable"; }
+}
+const pick = (o, ks) => Object.fromEntries(ks.map(k => [k, o[k]]));
+
+go(location.hash.slice(1) || "home", false);
+refresh();
+setInterval(refresh, 2500);
+</script>
+</body>
+</html>

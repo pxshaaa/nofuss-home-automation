@@ -1,0 +1,827 @@
+"""NoFuss Home: a tiny self-hosted controller for SwitchBot curtains & meters, Govee lamps and Sonos/Spotify.
+
+Runs on an always-on Mac near your devices. Web UI on http://<this-mac>.local:8765
+Curtain position: 0 = closed, 100 = open.
+"""
+import asyncio
+import datetime as dt
+import json
+import logging
+import os
+import socket
+import subprocess
+import time
+import uuid
+from pathlib import Path
+from zoneinfo import ZoneInfo
+
+import aiohttp
+from aiohttp import web
+from astral import LocationInfo
+from astral.sun import sun
+from bleak import BleakScanner
+from switchbot import SwitchbotCurtain, parse_advertisement_data
+
+from music import Music
+
+BASE = Path(__file__).parent
+DATA = BASE / "data"                                  # your settings, automations and history (git-ignored)
+CONFIG_DIR = Path.home() / ".config" / "nofuss-home"  # secrets: govee.key, spotify.json
+SETTINGS_FILE = DATA / "settings.json"
+STATE_FILE = DATA / "state.json"
+PORT = int(os.environ.get("NOFUSS_PORT", 8765))
+MULTIZONE_LAMPS = {"H60B0"}  # Govee lamps whose top/middle/bottom lights switch separately (cloud API only)
+GRACE = dt.timedelta(minutes=15)  # late automations still fire within this window (covers restarts)
+
+def local_timezone():
+    """IANA name of this Mac's time zone (e.g. "Europe/Berlin")."""
+    try:
+        return os.path.realpath("/etc/localtime").split("zoneinfo/")[1]
+    except (IndexError, OSError):
+        return "UTC"
+
+
+DEFAULTS = {
+    "address": "",            # SwitchBot curtain; empty = use the first one found
+    "timezone": local_timezone(),
+    "lat": None,              # your location, only for sunrise/sunset automations (setup.sh can fill it in)
+    "lon": None,
+    # lamp backend: "none" until found, "lan" (Govee LAN control) or "cloud" (Govee API key only)
+    "lamp": {"backend": "none", "ip": "", "sku": "", "device": ""},
+    "automations": [],
+    "music": {"ip": "", "name": ""},  # Sonos; empty = use the first one found
+    "lamp_presets": [
+        {"id": "cozy", "name": "Cozy", "icon": "🛋️", "brightness": 45, "rgb": [255, 120, 40],
+         "zones": {"top": True, "middle": True, "bottom": False}},
+        {"id": "reading", "name": "Reading", "icon": "📖", "brightness": 90, "kelvin": 4000,
+         "zones": {"top": False, "middle": False, "bottom": True}},
+        {"id": "intimate", "name": "Intimate", "icon": "🕯️", "brightness": 20, "rgb": [200, 30, 70],
+         "zones": {"top": True, "middle": False, "bottom": False}},
+    ],
+}
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+log = logging.getLogger("home")
+
+
+def load(path, default):
+    try:
+        return {**default, **json.loads(path.read_text())}
+    except (FileNotFoundError, json.JSONDecodeError):
+        return json.loads(json.dumps(default))
+
+
+def save(path, data):
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, indent=2))
+    tmp.replace(path)
+
+
+class History:
+    def __init__(self):
+        self.items = []  # newest first
+
+    def add(self, text):
+        self.items.insert(0, {"at": dt.datetime.now().strftime("%d.%m. %H:%M"), "text": text})
+        del self.items[30:]
+        log.info(text)
+
+
+class Curtain:
+    """Keeps one SwitchbotCurtain instance so the BLE connection is reused between quick commands."""
+
+    def __init__(self, address, history):
+        self.address = address
+        self.history = history
+        self.on_found = lambda address: None  # set by main() to remember an auto-discovered curtain
+        self.dev = None
+        self.adv = None
+        self.seen_at = None
+        self.lock = asyncio.Lock()
+        self.target = None  # latest requested position while a move is in flight
+
+    def on_adv(self, device, adv_data):
+        if self.address and device.address != self.address:
+            return
+        parsed = parse_advertisement_data(device, adv_data)
+        if not parsed:
+            return
+        if not self.address:  # no curtain configured yet: adopt the first one we hear
+            if not str(parsed.data.get("modelFriendlyName", "")).startswith("Curtain"):
+                return
+            self.address = device.address
+            log.info("found curtain %s", device.address)
+            self.on_found(device.address)
+        self.adv, self.seen_at = parsed, dt.datetime.now()
+        if self.dev is None:
+            self.dev = SwitchbotCurtain(device=device)
+        self.dev.update_from_advertisement(parsed)
+
+    async def _device(self):
+        if not self.address:
+            raise RuntimeError("no curtain found yet")
+        if self.dev is None:
+            ble = await BleakScanner.find_device_by_address(self.address, timeout=15)
+            if ble is None:
+                raise RuntimeError("curtain not found")
+            self.dev = SwitchbotCurtain(device=ble)
+        return self.dev
+
+    async def command(self, action, position=None, reason="manual"):
+        if action == "position":
+            self.target = int(position)
+        async with self.lock:
+            if action == "position":
+                if self.target is None:  # a newer request already ran
+                    return True
+                position, self.target = self.target, None
+            for attempt in range(3):
+                try:
+                    dev = await self._device()
+                    if action == "open":
+                        ok = await dev.open()
+                    elif action == "close":
+                        ok = await dev.close()
+                    elif action == "stop":
+                        ok = await dev.stop()
+                    else:
+                        ok = await dev.set_position(position)
+                    if ok:
+                        label = {"open": "Curtain opened", "close": "Curtain closed", "stop": "Curtain stopped"}.get(
+                            action, f"Curtain set to {position}%")
+                        self.history.add(f"{label}" + ("" if reason == "manual" else f" · {reason}"))
+                        return True
+                    raise RuntimeError("curtain rejected command")
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("curtain attempt %s failed: %s", attempt + 1, exc)
+                    self.dev = None
+                    await asyncio.sleep(2)
+            self.history.add(f"FAILED curtain {action}" + ("" if reason == "manual" else f" · {reason}"))
+            return False
+
+    def status(self):
+        data = self.adv.data["data"] if self.adv else {}
+        return {
+            "position": data.get("position"),
+            "battery": data.get("battery"),
+            "moving": bool(data.get("inMotion")),
+            "seen": self.seen_at.isoformat() if self.seen_at else None,
+            "busy": self.lock.locked(),
+        }
+
+
+def govee_key():
+    return os.environ.get("GOVEE_API_KEY") or _read(CONFIG_DIR / "govee.key") or keychain("govee-api-key")
+
+
+def _read(path):
+    try:
+        return path.read_text().strip()
+    except OSError:
+        return ""
+
+
+class Sensors:
+    """Passive SwitchBot meters (e.g. Meter Pro CO2): they broadcast readings, we just listen."""
+
+    SAMPLE_EVERY = 300  # seconds between history points
+    FILE = DATA / "sensors.json"
+
+    def __init__(self):
+        self.devices = load(self.FILE, {"devices": {}})["devices"]  # address -> {name, co2, temp, ..., history}
+
+    def on_adv(self, device, adv_data):
+        if 2409 not in adv_data.manufacturer_data:
+            return
+        parsed = parse_advertisement_data(device, adv_data)
+        data = parsed.data.get("data", {}) if parsed else {}
+        if "temperature" not in data and "co2" not in data:
+            return
+        d = self.devices.setdefault(device.address, {
+            "name": "CO2 Meter" if "co2" in data else "Meter",
+            "model": parsed.data.get("modelFriendlyName"), "history": []})
+        now = time.time()
+        d.update({"co2": data.get("co2"), "temp": data.get("temperature"), "humidity": data.get("humidity"),
+                  "battery": data.get("battery"), "seen": now})
+        if not d["history"] or now - d["history"][-1][0] >= self.SAMPLE_EVERY:
+            d["history"].append([round(now), d["co2"], d["temp"], d["humidity"]])
+            d["history"] = [h for h in d["history"] if now - h[0] <= 86400]
+            save(self.FILE, {"devices": self.devices})
+
+    def status(self):
+        return [{"id": addr, **d} for addr, d in self.devices.items()]
+
+
+def keychain(label):
+    try:
+        return subprocess.run(["security", "find-generic-password", "-s", label, "-w"],
+                              capture_output=True, text=True, timeout=5).stdout.strip()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+class Lamp:
+    """Govee lamp via LAN control (UDP) or the Govee cloud API."""
+
+    CLOUD = "https://openapi.api.govee.com/router/api/v1"
+
+    def __init__(self, cfg, history):
+        self.cfg = cfg
+        self.history = history
+        self.state = {"on": None, "brightness": None, "kelvin": None, "rgb": None, "zones": None}
+        self.zones_at = -1e9
+        self.ok_at = None
+        self.error = None
+        self.on_config_change = lambda: None  # set by main() to persist a changed IP
+
+    @property
+    def backend(self):
+        return self.cfg.get("backend", "none")
+
+    # LAN ------------------------------------------------------------------
+    def _lan_send(self, cmd, data):
+        msg = json.dumps({"msg": {"cmd": cmd, "data": data}}).encode()
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.sendto(msg, (self.cfg["ip"], 4003))
+
+    def _lan_discover(self):
+        """Find the lamp's current IP by its device id (the router may hand out a new one)."""
+        msg = json.dumps({"msg": {"cmd": "scan", "data": {"account_topic": "reserve"}}}).encode()
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind(("", 4002))
+            s.settimeout(1)
+            s.sendto(msg, ("239.255.255.250", 4001))
+            end = time.monotonic() + 4
+            while time.monotonic() < end:
+                try:
+                    data = json.loads(s.recvfrom(4096)[0])["msg"]["data"]
+                except (socket.timeout, ValueError, KeyError):
+                    continue
+                if data.get("device") == self.cfg.get("device") or not self.cfg.get("device"):
+                    if data["ip"] != self.cfg.get("ip") or not self.cfg.get("device"):
+                        log.info("lamp %s (%s) at %s", data.get("sku"), data.get("device"), data["ip"])
+                        self.cfg.update({"ip": data["ip"], "device": data.get("device", ""), "sku": data.get("sku", "")})
+                        if self.cfg.get("backend", "none") == "none":
+                            self.cfg["backend"] = "lan"
+                        self.on_config_change()
+                    return True
+        return False
+
+    def _lan_status(self):
+        try:
+            return self._lan_status_once()
+        except (socket.timeout, OSError):
+            if self._lan_discover():
+                return self._lan_status_once()
+            raise RuntimeError("lamp not reachable")
+
+    def _lan_status_once(self):
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind(("", 4002))
+            s.settimeout(2)
+            s.sendto(json.dumps({"msg": {"cmd": "devStatus", "data": {}}}).encode(), (self.cfg["ip"], 4003))
+            data = json.loads(s.recvfrom(4096)[0])["msg"]["data"]
+        c = data.get("color") or {}
+        return {"on": data.get("onOff") == 1, "brightness": data.get("brightness"),
+                "kelvin": data.get("colorTemInKelvin") or None, "rgb": [c.get("r"), c.get("g"), c.get("b")] if c else None}
+
+    # Cloud ----------------------------------------------------------------
+    async def _cloud(self, path, payload):
+        key = govee_key()
+        if not key:
+            raise RuntimeError("Govee API key missing")
+        async with aiohttp.ClientSession() as http:
+            async with http.post(f"{self.CLOUD}{path}", json={"requestId": str(uuid.uuid4()), "payload": payload},
+                                 headers={"Govee-API-Key": key}, timeout=aiohttp.ClientTimeout(total=10)) as r:
+                body = await r.json(content_type=None)
+                if r.status != 200 or body.get("code") not in (200, None):
+                    raise RuntimeError(f"Govee API: {body.get('msg') or r.status}")
+                return body
+
+    async def _cloud_discover(self):
+        try:
+            async with aiohttp.ClientSession() as http:
+                async with http.get(f"{self.CLOUD}/user/devices", headers={"Govee-API-Key": govee_key()},
+                                    timeout=aiohttp.ClientTimeout(total=10)) as r:
+                    devices = (await r.json(content_type=None)).get("data", [])
+        except Exception as exc:  # noqa: BLE001
+            self.error = str(exc)
+            return
+        lamp = next((d for d in devices if d.get("type") == "devices.types.light"), None)
+        if lamp:
+            log.info("lamp %s (%s) via Govee cloud", lamp["sku"], lamp["device"])
+            self.cfg.update({"backend": "cloud", "sku": lamp["sku"], "device": lamp["device"]})
+            self.on_config_change()
+
+    async def _cloud_control(self, ctype, instance, value):
+        await self._cloud("/device/control", {"sku": self.cfg["sku"], "device": self.cfg["device"],
+                                              "capability": {"type": ctype, "instance": instance, "value": value}})
+
+    # Public ---------------------------------------------------------------
+    ZONES = {"top": "rippleLightToggle", "middle": "sideLightToggle", "bottom": "bottomLightToggle"}
+
+    def zones_supported(self):
+        return self.cfg.get("sku") in MULTIZONE_LAMPS
+
+    def has_cloud(self):
+        return bool(govee_key()) and bool(self.cfg.get("device"))
+
+    async def refresh(self):
+        """LAN status every tick; zone switches (cloud only) at most once a minute."""
+        if self.backend == "none":
+            # not set up yet: look for a Govee lamp with LAN Control switched on, about once a minute
+            if time.monotonic() - self.zones_at > 60:
+                self.zones_at = time.monotonic()
+                if not await asyncio.to_thread(self._lan_discover) and govee_key():
+                    await self._cloud_discover()  # no LAN Control: fall back to the cloud API
+            return
+        try:
+            if self.backend == "lan":
+                lan = await asyncio.to_thread(self._lan_status)
+                self.state.update({k: v for k, v in lan.items() if k in ("on", "brightness")})
+                if not self.has_cloud():
+                    self.state.update(lan)
+            if self.has_cloud() and (self.backend == "cloud" or time.monotonic() - self.zones_at > 60):
+                await self.refresh_cloud()
+            self.ok_at, self.error = dt.datetime.now(), None
+        except Exception as exc:  # noqa: BLE001
+            self.error = str(exc)
+
+    async def refresh_cloud(self):
+        body = await self._cloud("/device/state", {"sku": self.cfg["sku"], "device": self.cfg["device"]})
+        caps = {c["instance"]: c["state"]["value"] for c in body["payload"]["capabilities"]}
+        rgb = caps.get("colorRgb")
+        self.state.update({
+            "on": caps.get("powerSwitch") == 1, "brightness": caps.get("brightness"),
+            "kelvin": caps.get("colorTemperatureK") or None,
+            "rgb": [(rgb >> 16) & 255, (rgb >> 8) & 255, rgb & 255] if isinstance(rgb, int) and rgb else None,
+            "zones": {z: caps.get(inst) == 1 for z, inst in self.ZONES.items()},
+        })
+        self.zones_at = time.monotonic()
+
+    async def apply_preset(self, p):
+        change = {"on": True}
+        if p.get("rgb"):
+            change["rgb"] = p["rgb"]
+        elif p.get("kelvin"):
+            change["kelvin"] = p["kelvin"]
+        change["brightness"] = p["brightness"]
+        if self.zones_supported() and self.has_cloud():
+            change["zones"] = p["zones"]  # cloud round trip last; the LAN parts above land instantly
+        return await self.set(change, label=f"Lamp: {p['name']}")
+
+    async def set(self, change, reason="manual", label=None):
+        """Everything over LAN (instant) except the zone switches, which only the cloud offers.
+
+        Zone switches run in parallel and only for zones that actually change.
+        """
+        if self.backend == "none":
+            raise RuntimeError("lamp not set up")
+        cloud = self.has_cloud() or self.backend == "cloud"
+        try:
+            for key, value in change.items():
+                if key == "zones":
+                    if not cloud:
+                        raise RuntimeError("zone switches need the Govee API key")
+                    current = self.state.get("zones") or {}
+                    todo = {z: bool(on) for z, on in value.items() if current.get(z) != bool(on) or not self.state.get("on")}
+                    await asyncio.gather(*(self._cloud_control("devices.capabilities.toggle", self.ZONES[z], 1 if on else 0)
+                                           for z, on in todo.items()))
+                    self.state["zones"] = {**current, **{z: bool(on) for z, on in value.items()}}
+                    continue
+                if self.backend == "lan":
+                    if key == "on":
+                        self._lan_send("turn", {"value": 1 if value else 0})
+                    elif key == "brightness":
+                        self._lan_send("brightness", {"value": int(value)})
+                    elif key == "kelvin":
+                        self._lan_send("colorwc", {"color": {"r": 0, "g": 0, "b": 0}, "colorTemInKelvin": int(value)})
+                    elif key == "rgb":
+                        r, g, b = value
+                        self._lan_send("colorwc", {"color": {"r": r, "g": g, "b": b}, "colorTemInKelvin": 0})
+                elif cloud:
+                    if key == "on":
+                        await self._cloud_control("devices.capabilities.on_off", "powerSwitch", 1 if value else 0)
+                    elif key == "brightness":
+                        await self._cloud_control("devices.capabilities.range", "brightness", int(value))
+                    elif key == "kelvin":
+                        await self._cloud_control("devices.capabilities.color_setting", "colorTemperatureK", int(value))
+                    elif key == "rgb":
+                        r, g, b = value
+                        await self._cloud_control("devices.capabilities.color_setting", "colorRgb", (r << 16) | (g << 8) | b)
+                self.state[key] = value
+                if key in ("kelvin", "rgb"):
+                    self.state["rgb" if key == "kelvin" else "kelvin"] = None
+                if key != "on":
+                    self.state["on"] = True
+            if label:
+                text = label
+            elif "zones" in change:
+                text = "Lamp lights: " + ", ".join(f"{z} {'on' if v else 'off'}" for z, v in change["zones"].items())
+            elif "on" in change:
+                text = "Lamp on" if change["on"] else "Lamp off"
+            elif "brightness" in change:
+                text = f"Lamp brightness {change['brightness']}%"
+            else:
+                text = "Lamp color changed"
+            self.history.add(text + ("" if reason == "manual" else f" · {reason}"))
+            return True
+        except Exception as exc:  # noqa: BLE001
+            self.history.add(f"FAILED lamp · {exc}")
+            return False
+
+    def status(self):
+        return {**self.state, "backend": self.backend, "error": self.error, "cloud": self.has_cloud(),
+                "zones_supported": self.zones_supported(), "model": self.cfg.get("sku"),
+                "seen": self.ok_at.isoformat() if self.ok_at else None}
+
+
+# Automations ------------------------------------------------------------------
+
+def sun_times(day, s):
+    """Sunrise/sunset for the configured location, or (None, None) if no location is set."""
+    if s.get("lat") is None or s.get("lon") is None:
+        return None, None
+    loc = LocationInfo(latitude=s["lat"], longitude=s["lon"], timezone=s["timezone"])
+    t = sun(loc.observer, date=day, tzinfo=ZoneInfo(s["timezone"]))
+    return t["sunrise"], t["sunset"]
+
+
+def when_on(day, a, s):
+    tz = ZoneInfo(s["timezone"])
+    if a.get("once"):
+        if day.isoformat() != a.get("date"):
+            return None
+    elif day.weekday() not in a.get("days", range(7)):
+        return None
+    if a["trigger"] in ("sunrise", "sunset"):
+        sunrise, sunset = sun_times(day, s)
+        return sunrise if a["trigger"] == "sunrise" else sunset  # None without a location: never fires
+    h, m = map(int, a["time"].split(":"))
+    return dt.datetime.combine(day, dt.time(h, m), tz)
+
+
+def arm_once(a, s):
+    """Point a one-off at the next occurrence of its time (today if still ahead, else tomorrow)."""
+    now = dt.datetime.now(ZoneInfo(s["timezone"]))
+    for d in range(2):
+        day = now.date() + dt.timedelta(days=d)
+        t = when_on(day, {**a, "once": False, "days": list(range(7))}, s)
+        if t and t > now:
+            a["date"] = day.isoformat()
+            return
+
+
+def next_run(a, s):
+    now = dt.datetime.now(ZoneInfo(s["timezone"]))
+    for d in range(8):
+        t = when_on(now.date() + dt.timedelta(days=d), a, s)
+        if t and t > now:
+            return t
+    return None
+
+
+async def run_automation(app, a):
+    jobs = [run_main_action(app, a)]
+    if a["device"] != "music" and a.get("music_on") and a.get("music_uri"):  # "Also play music", in parallel
+        jobs.append(app["music"].command("playlist", a["music_uri"], a.get("music_volume"),
+                                         bool(a.get("music_shuffle")), reason="automation"))
+    await asyncio.gather(*jobs)
+
+
+async def run_main_action(app, a):
+    label = "automation"
+    if a["device"] == "curtain":
+        await app["curtain"].command(a["action"], a.get("position"), reason=label)
+    elif a["device"] == "music":
+        if a["action"] == "play" and a.get("uri"):
+            await app["music"].command("playlist", a["uri"], a.get("volume"), a.get("shuffle", False), reason=label)
+        else:
+            await app["music"].command(a["action"], volume=a.get("volume") if a["action"] == "play" else None, reason=label)
+    else:
+        change = {"on": a["action"] == "on"}
+        if a["action"] == "on" and a.get("brightness"):
+            change["brightness"] = a["brightness"]
+        if a["action"] == "on" and a.get("kelvin"):
+            change["kelvin"] = a["kelvin"]
+        await app["lamp"].set(change, reason=label)
+
+
+async def scheduler(app):
+    while True:
+        try:
+            s = app["settings"]
+            state = load(STATE_FILE, {"fired": {}})
+            now = dt.datetime.now(ZoneInfo(s["timezone"]))
+            for a in s["automations"]:
+                if not a.get("enabled"):
+                    continue
+                t = when_on(now.date(), a, s)
+                key = f"{now.date()}:{a['id']}:{a['trigger']}:{a['time']}"
+                if t and t <= now < t + GRACE and key not in state["fired"]:
+                    state["fired"][key] = now.isoformat()
+                    state["fired"] = dict(list(state["fired"].items())[-50:])
+                    save(STATE_FILE, state)
+                    asyncio.create_task(run_automation(app, a))
+                    if a.get("once"):  # one-off: done after it fires
+                        a["enabled"] = False
+                        save(SETTINGS_FILE, s)
+        except Exception:  # noqa: BLE001
+            log.exception("scheduler tick failed")
+        await asyncio.sleep(20)
+
+
+async def music_poller(app):
+    while True:
+        await app["music"].refresh()
+        await asyncio.sleep(4)
+
+
+async def lamp_poller(app):
+    while True:
+        await app["lamp"].refresh()
+        await asyncio.sleep(10 if app["lamp"].backend == "lan" else 60)
+
+
+# HTTP ---------------------------------------------------------------------------
+
+def snapshot(app):
+    s = app["settings"]
+    tz = ZoneInfo(s["timezone"])
+    today = dt.datetime.now(tz).date()
+    sunrise, sunset = sun_times(today, s)
+    autos = []
+    for a in s["automations"]:
+        n = next_run(a, s) if a.get("enabled") else None
+        autos.append({**a, "next": n.isoformat() if n else None})
+    return {
+        "curtain": app["curtain"].status(),
+        "lamp": app["lamp"].status(),
+        "automations": autos,
+        "sun": {"sunrise": sunrise.strftime("%H:%M") if sunrise else None,
+                "sunset": sunset.strftime("%H:%M") if sunset else None},
+        "history": app["history"].items,
+        "presets": s["lamp_presets"],
+        "sensors": app["sensors"].status(),
+        "music": app["music"].status(),
+        "bluetooth": app.get("bluetooth"),
+    }
+
+
+async def api_state(request):
+    return web.json_response(snapshot(request.app))
+
+
+async def api_curtain(request):
+    body = await request.json()
+    action = body.get("action")
+    if action not in {"open", "close", "stop", "position"}:
+        raise web.HTTPBadRequest(text="bad action")
+    if action == "position" and not 0 <= int(body.get("position", -1)) <= 100:
+        raise web.HTTPBadRequest(text="bad position")
+    # respond right away; the UI follows progress via /api/state
+    asyncio.create_task(request.app["curtain"].command(action, body.get("position")))
+    return web.json_response({"ok": True})
+
+
+async def api_lamp(request):
+    body = await request.json()
+    change = {}
+    if "on" in body:
+        change["on"] = bool(body["on"])
+    if "brightness" in body:
+        change["brightness"] = max(1, min(100, int(body["brightness"])))
+    if "kelvin" in body:
+        change["kelvin"] = max(2000, min(9000, int(body["kelvin"])))
+    if isinstance(body.get("zones"), dict):
+        change["zones"] = {z: bool(v) for z, v in body["zones"].items() if z in Lamp.ZONES}
+    if "rgb" in body:
+        change["rgb"] = [max(0, min(255, int(v))) for v in body["rgb"]][:3]
+    try:
+        ok = await request.app["lamp"].set(change)
+    except RuntimeError as exc:
+        raise web.HTTPConflict(text=str(exc))
+    return web.json_response({"ok": ok, "lamp": request.app["lamp"].status()})
+
+
+def clean_automation(body, existing_id=None):
+    device = body.get("device")
+    actions = {"curtain": {"open", "close", "position"}, "lamp": {"on", "off"}, "music": {"play", "pause"}}
+    if device not in actions or body.get("action") not in actions[device]:
+        raise web.HTTPBadRequest(text="bad device/action")
+    if body.get("trigger") not in {"time", "sunrise", "sunset"}:
+        raise web.HTTPBadRequest(text="bad trigger")
+    time = body.get("time") or "08:00"
+    dt.time.fromisoformat(time)
+    days = sorted({int(d) for d in body.get("days", range(7)) if 0 <= int(d) <= 6})
+    out = {"id": existing_id or uuid.uuid4().hex[:8], "device": device, "action": body["action"],
+           "trigger": body["trigger"], "time": time, "days": days, "enabled": bool(body.get("enabled", True)),
+           "once": bool(body.get("once", False))}
+    if body["action"] == "position":
+        out["position"] = max(0, min(100, int(body.get("position", 50))))
+    if device == "lamp" and body["action"] == "on":
+        if body.get("brightness"):
+            out["brightness"] = max(1, min(100, int(body["brightness"])))
+        if body.get("kelvin"):
+            out["kelvin"] = max(2000, min(9000, int(body["kelvin"])))
+    if device != "music" and body.get("music_on"):
+        out["music_on"] = 1
+        out["music_uri"] = str(body.get("music_uri") or "") or None
+        out["music_name"] = str(body.get("music_name") or "")[:80]
+        out["music_volume"] = max(0, min(100, int(body.get("music_volume") or 20)))
+        out["music_shuffle"] = 1 if int(body.get("music_shuffle", 1) or 0) else 0
+    if device == "music" and body["action"] == "play":
+        if body.get("uri"):
+            out["uri"] = str(body["uri"])
+            out["playlist_name"] = str(body.get("playlist_name") or "")[:80]
+        out["volume"] = max(0, min(100, int(body.get("volume") or 20)))
+        out["shuffle"] = bool(body.get("shuffle", False))
+    return out
+
+
+async def api_music(request):
+    body = await request.json()
+    action = body.get("action")
+    if action not in {"playlist", "play", "pause", "next", "previous", "volume", "vol_up", "vol_down"}:
+        raise web.HTTPBadRequest(text="bad action")
+    if action == "playlist" and not str(body.get("uri", "")).startswith("spotify:"):
+        raise web.HTTPBadRequest(text="bad uri")
+    vol = body.get("volume")
+    vol = None if vol is None else max(0, min(100, int(vol)))
+    ok = await request.app["music"].command(None if action == "volume" else action, body.get("uri"), vol,
+                                            bool(body.get("shuffle", False)))
+    return web.json_response({"ok": ok, "music": request.app["music"].status()})
+
+
+async def api_music_step(request):
+    """For iPhone Shortcuts / Control Center buttons: one POST, no body."""
+    ok = await request.app["music"].command("vol_" + request.match_info["dir"])
+    await request.app["music"].refresh()
+    return web.json_response({"ok": ok, "volume": request.app["music"].state.get("volume")})
+
+
+async def api_music_playlists(request):
+    try:
+        return web.json_response(await request.app["music"].playlists())
+    except Exception as exc:  # noqa: BLE001
+        raise web.HTTPBadGateway(text=f"Spotify: {exc}")
+
+
+async def api_music_art(request):
+    try:
+        data, ctype = await request.app["music"].art()
+    except Exception:  # noqa: BLE001
+        data = None
+    if not data:
+        raise web.HTTPNotFound()
+    return web.Response(body=data, content_type=ctype.split(";")[0], headers={"Cache-Control": "max-age=300"})
+
+
+async def api_automation_upsert(request):
+    s = request.app["settings"]
+    body = await request.json()
+    aid = request.match_info.get("id")
+    if aid:
+        idx = next((i for i, a in enumerate(s["automations"]) if a["id"] == aid), None)
+        if idx is None:
+            raise web.HTTPNotFound()
+        a = clean_automation({**s["automations"][idx], **body}, aid)
+        s["automations"][idx] = a
+    else:
+        a = clean_automation(body)
+        s["automations"].append(a)
+    if a["once"]:
+        arm_once(a, s)
+    save(SETTINGS_FILE, s)
+    return web.json_response(snapshot(request.app))
+
+
+async def api_automation_delete(request):
+    s = request.app["settings"]
+    s["automations"] = [a for a in s["automations"] if a["id"] != request.match_info["id"]]
+    save(SETTINGS_FILE, s)
+    return web.json_response(snapshot(request.app))
+
+
+async def api_preset_apply(request):
+    p = next((p for p in request.app["settings"]["lamp_presets"] if p["id"] == request.match_info["id"]), None)
+    if p is None:
+        raise web.HTTPNotFound()
+    ok = await request.app["lamp"].apply_preset(p)
+    return web.json_response({"ok": ok, "lamp": request.app["lamp"].status()})
+
+
+async def api_preset_save(request):
+    """Save the lamp's current look under a name."""
+    s, body, lamp = request.app["settings"], await request.json(), request.app["lamp"].state
+    name = str(body.get("name", "")).strip()[:24]
+    if not name:
+        raise web.HTTPBadRequest(text="name required")
+    zones = lamp.get("zones") or {"top": True, "middle": False, "bottom": False}
+    p = {"id": uuid.uuid4().hex[:8], "name": name, "icon": str(body.get("icon") or "⭐")[:4],
+         "brightness": lamp.get("brightness") or 50, "zones": dict(zones)}
+    if lamp.get("rgb"):
+        p["rgb"] = lamp["rgb"]
+    elif lamp.get("kelvin"):
+        p["kelvin"] = lamp["kelvin"]
+    s["lamp_presets"].append(p)
+    save(SETTINGS_FILE, s)
+    return web.json_response(snapshot(request.app))
+
+
+async def api_preset_order(request):
+    s, ids = request.app["settings"], (await request.json()).get("ids", [])
+    by_id = {p["id"]: p for p in s["lamp_presets"]}
+    s["lamp_presets"] = [by_id[i] for i in ids if i in by_id] + [p for p in s["lamp_presets"] if p["id"] not in ids]
+    save(SETTINGS_FILE, s)
+    return web.json_response(snapshot(request.app))
+
+
+async def api_preset_delete(request):
+    s = request.app["settings"]
+    s["lamp_presets"] = [p for p in s["lamp_presets"] if p["id"] != request.match_info["id"]]
+    save(SETTINGS_FILE, s)
+    return web.json_response(snapshot(request.app))
+
+
+async def index(request):
+    return web.FileResponse(BASE / "web" / "index.html", headers={"Cache-Control": "no-cache"})
+
+
+async def on_startup(app):
+    def on_adv(device, adv_data):
+        app["curtain"].on_adv(device, adv_data)
+        app["sensors"].on_adv(device, adv_data)
+    app["scanner"] = BleakScanner(detection_callback=on_adv)
+    app["tasks"] = [asyncio.create_task(scheduler(app)), asyncio.create_task(lamp_poller(app)),
+                    asyncio.create_task(music_poller(app)), asyncio.create_task(bluetooth(app))]
+    log.info("listening on :%s", PORT)
+
+
+async def bluetooth(app):
+    """Listen for SwitchBot devices. Bluetooth is optional: lamp and music keep working without it."""
+    while True:
+        try:
+            await app["scanner"].start()
+            app["bluetooth"] = True
+            return
+        except Exception as exc:  # noqa: BLE001 — e.g. permission not granted yet
+            app["bluetooth"] = False
+            log.warning("Bluetooth unavailable (%s); allow it for Python in System Settings → Privacy & "
+                        "Security → Bluetooth. Retrying in 60 s.", exc)
+            await asyncio.sleep(60)
+
+
+async def on_cleanup(app):
+    for t in app["tasks"]:
+        t.cancel()
+    if app.get("bluetooth"):
+        await app["scanner"].stop()
+
+
+def main():
+    DATA.mkdir(exist_ok=True)
+    settings = load(SETTINGS_FILE, DEFAULTS)
+    save(SETTINGS_FILE, settings)
+    history = History()
+    app = web.Application()
+    app["settings"] = settings
+    app["history"] = history
+    app["curtain"] = Curtain(settings["address"], history)
+
+    def remember_curtain(address):
+        settings["address"] = address
+        save(SETTINGS_FILE, settings)
+    app["curtain"].on_found = remember_curtain
+    app["sensors"] = Sensors()
+    app["music"] = Music(settings["music"], history)
+    app["music"].on_config_change = lambda: save(SETTINGS_FILE, settings)
+    app["lamp"] = Lamp(settings["lamp"], history)
+    app["lamp"].on_config_change = lambda: save(SETTINGS_FILE, settings)
+    app.add_routes([
+        web.get("/", index),
+        web.get("/api/state", api_state),
+        web.post("/api/curtain", api_curtain),
+        web.post("/api/lamp", api_lamp),
+        web.post("/api/music", api_music),
+        web.get("/api/music/playlists", api_music_playlists),
+        web.post("/api/music/volume/{dir:up|down}", api_music_step),
+        web.get("/api/music/art", api_music_art),
+        web.post("/api/presets", api_preset_save),
+        web.post("/api/presets/order", api_preset_order),
+        web.post("/api/presets/{id}/apply", api_preset_apply),
+        web.delete("/api/presets/{id}", api_preset_delete),
+        web.post("/api/automations", api_automation_upsert),
+        web.post("/api/automations/{id}", api_automation_upsert),
+        web.delete("/api/automations/{id}", api_automation_delete),
+        web.static("/static", BASE / "web"),
+    ])
+    app.on_startup.append(on_startup)
+    app.on_cleanup.append(on_cleanup)
+    web.run_app(app, port=PORT, print=None)
+
+
+if __name__ == "__main__":
+    main()
