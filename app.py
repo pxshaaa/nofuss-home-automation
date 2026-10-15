@@ -24,6 +24,7 @@ from astral import LocationInfo
 from astral.sun import sun
 from bleak import BleakScanner
 from switchbot import SwitchbotCurtain, parse_advertisement_data
+from switchbot.devices.smart_thermostat_radiator import SwitchbotSmartThermostatRadiator
 
 from music import Music
 from push import Push
@@ -193,6 +194,96 @@ def _read(path):
         return ""
 
 
+class Thermostat:
+    """SwitchBot Smart Radiator Thermostat. Readings are broadcast openly; control is encrypted and needs the
+    one-time key from scripts/switchbot_key.py (saved in ~/.config/nofuss-home/switchbot_keys.json)."""
+
+    MODES = ["comfort", "eco", "manual", "boost", "off"]
+
+    def __init__(self, cfg, history):
+        self.cfg = cfg  # {"address": "", "mac": ""}
+        self.history = history
+        self.data, self.ble, self.seen_at, self.dev = {}, None, None, None
+        self.lock = asyncio.Lock()
+        self.on_found = lambda: None
+
+    def on_adv(self, device, adv_data):
+        if self.cfg.get("address") and device.address != self.cfg["address"]:
+            return
+        parsed = parse_advertisement_data(device, adv_data)
+        if not parsed or parsed.data.get("modelFriendlyName") != "Smart Thermostat Radiator":
+            return
+        if not self.cfg.get("address"):
+            mfr = adv_data.manufacturer_data.get(2409, b"")
+            self.cfg.update({"address": device.address, "mac": ":".join(f"{b:02X}" for b in mfr[:6])})
+            log.info("found thermostat %s (%s)", device.address, self.cfg["mac"])
+            self.on_found()
+        self.ble, self.data, self.seen_at = device, parsed.data.get("data", {}), dt.datetime.now()
+        if self.dev:
+            self.dev.update_from_advertisement(parsed)
+        self._last_adv = parsed
+
+    def key(self):
+        try:
+            return json.loads((CONFIG_DIR / "switchbot_keys.json").read_text()).get(self.cfg.get("mac", ""))
+        except (OSError, ValueError):
+            return None
+
+    def _device(self):
+        if self.dev is None:
+            k = self.key()
+            if not k:
+                raise RuntimeError("thermostat needs its key (scripts/switchbot_key.py)")
+            if self.ble is None:
+                raise RuntimeError("thermostat not seen yet")
+            self.dev = SwitchbotSmartThermostatRadiator(device=self.ble, key_id=k["key_id"],
+                                                         encryption_key=k["encryption_key"])
+            if getattr(self, "_last_adv", None):
+                self.dev.update_from_advertisement(self._last_adv)
+        return self.dev
+
+    async def command(self, action, value=None, reason="manual"):
+        """action: "target" (value = °C) or "mode" (value = one of MODES)."""
+        async with self.lock:
+            for attempt in range(3):
+                try:
+                    dev = self._device()
+                    if action == "mode":
+                        ok = await (dev.turn_off() if value == "off" else dev.set_preset_mode(value))
+                        text = "Heating off" if value == "off" else f"Heating mode {value}"
+                    else:
+                        if self.data.get("mode") != "manual":  # Manual holds exactly the set temperature
+                            await dev.set_preset_mode("manual")
+                            self.data["mode"] = "manual"
+                            await asyncio.sleep(1)
+                        ok = await dev.set_target_temperature(float(value))
+                        text = f"Heating set to {float(value):g}°"
+                    if ok is False:
+                        raise RuntimeError("thermostat rejected command")
+                    self.history.add(text + ("" if reason == "manual" else f" · {reason}"))
+                    return True
+                except RuntimeError as exc:
+                    if "key" in str(exc) or "not seen" in str(exc):
+                        self.history.add(f"FAILED heating · {exc}")
+                        return False
+                    log.warning("thermostat attempt %s failed: %s", attempt + 1, exc)
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("thermostat attempt %s failed: %s", attempt + 1, exc)
+                    self.dev = None
+                await asyncio.sleep(2)
+            self.history.add(f"FAILED heating {action}")
+            return False
+
+    def status(self):
+        d = self.data
+        return {"found": bool(self.cfg.get("address")), "seen": self.seen_at.isoformat() if self.seen_at else None,
+                "current": d.get("temperature"), "target": d.get("target_temperature"), "mode": d.get("mode"),
+                "on": d.get("isOn"), "battery": d.get("battery"), "window_open": d.get("door_open"),
+                "fault": d.get("fault_code"), "controllable": bool(self.cfg.get("mac") and self.key()),
+                "mac": self.cfg.get("mac"),
+                "busy": self.lock.locked()}
+
+
 class Sensors:
     """Passive SwitchBot meters (e.g. Meter Pro CO2): they broadcast readings, we just listen."""
 
@@ -208,6 +299,8 @@ class Sensors:
         parsed = parse_advertisement_data(device, adv_data)
         data = parsed.data.get("data", {}) if parsed else {}
         if "temperature" not in data and "co2" not in data:
+            return
+        if "Thermostat" in str(parsed.data.get("modelFriendlyName", "")):  # has its own Heating card
             return
         d = self.devices.setdefault(device.address, {
             "name": "CO2 Meter" if "co2" in data else "Meter",
@@ -501,6 +594,8 @@ def describe(a):
         text = {"open": "Curtain opened", "close": "Curtain closed"}.get(a["action"], f"Curtain set to {a.get('position')}%")
     elif a["device"] == "music":
         text = f"Playing {a.get('playlist_name') or 'music'}" if a["action"] == "play" else "Music paused"
+    elif a["device"] == "heating":
+        text = f"Heating set to {a.get('temperature', 21):g}°" if a["action"] == "target" else "Heating off"
     else:
         text = "Lamp on" + (f" · {a['brightness']}%" if a.get("brightness") else "") if a["action"] == "on" else "Lamp off"
     if a["device"] != "music" and a.get("music_on") and a.get("music_uri"):
@@ -528,6 +623,10 @@ async def run_automation(app, a):
 
 async def run_main_action(app, a):
     label = "automation"
+    if a["device"] == "heating":
+        if a["action"] == "off":
+            return await app["thermostat"].command("mode", "off", reason=label)
+        return await app["thermostat"].command("target", a.get("temperature", 21), reason=label)
     if a["device"] == "curtain":
         return await app["curtain"].command(a["action"], a.get("position"), reason=label)
     elif a["device"] == "music":
@@ -544,9 +643,69 @@ async def run_main_action(app, a):
         return await app["lamp"].set(change, reason=label)
 
 
+HEAT_DEFAULT = {"enabled": False, "home": 21.0, "save": 17.0,
+                "periods": [{"id": "work", "days": [0, 1, 2, 3, 4], "from": "08:30", "to": "17:30"}]}
+
+
+def _in_period(p, when):
+    """Is `when` inside a saving period? Periods may run past midnight (e.g. 23:00-06:30)."""
+    t = when.strftime("%H:%M")
+    if p["from"] <= p["to"]:
+        return when.weekday() in p["days"] and p["from"] <= t < p["to"]
+    if t >= p["from"]:
+        return when.weekday() in p["days"]
+    return (when - dt.timedelta(days=1)).weekday() in p["days"] and t < p["to"]
+
+
+def heat_wanted(hs, when):
+    """("save" | "home", temperature) the schedule asks for at `when`."""
+    if any(_in_period(p, when) for p in hs["periods"]):
+        return "save", hs["save"]
+    return "home", hs["home"]
+
+
+def heat_next_change(hs, now):
+    """When the schedule next switches, looking ahead up to a week in 5-minute steps."""
+    cur = heat_wanted(hs, now)[0]
+    t = now.replace(second=0, microsecond=0) + dt.timedelta(minutes=5 - now.minute % 5)
+    for _ in range(7 * 24 * 12):
+        if heat_wanted(hs, t)[0] != cur:
+            return t
+        t += dt.timedelta(minutes=5)
+    return None
+
+
+async def apply_heat_schedule(app, state):
+    s = app["settings"]
+    hs = s.get("heating_schedule") or {}
+    th = app["thermostat"]
+    if not hs.get("enabled") or not th.status()["controllable"] or th.lock.locked():
+        return
+    now = dt.datetime.now(ZoneInfo(s["timezone"]))
+    label, temp = heat_wanted(hs, now)
+    key = f"{label}:{temp}"
+    if state.get("heat_applied") == key:  # already switched; manual changes are kept until the next switch
+        return
+    if await th.command("target", temp, reason="schedule"):
+        state["heat_applied"] = key
+        save(STATE_FILE, state)
+        nxt = heat_next_change(hs, now)
+        until = f" until {nxt.strftime('%a %H:%M' if nxt.date() != now.date() else '%H:%M')}" if nxt else ""
+        await app["push"].send(f"Heating → {temp:g}° ({'saving' if label == 'save' else 'at home'})",
+                               f"Schedule{until}", url="/#heating", tag="heating")
+    else:
+        await app["push"].send("⚠️ Heating schedule didn't work", f"Couldn't set {temp:g}°", url="/#heating",
+                               tag="heating")
+
+
 async def scheduler(app):
     state = load(STATE_FILE, {"fired": {}})  # read once; kept in memory, written only when something fires
+    app["state"] = state
     while True:
+        try:
+            await apply_heat_schedule(app, state)
+        except Exception:  # noqa: BLE001
+            log.exception("heating schedule failed")
         try:
             s = app["settings"]
             now = dt.datetime.now(ZoneInfo(s["timezone"]))
@@ -582,6 +741,15 @@ async def lamp_poller(app):
 
 # HTTP ---------------------------------------------------------------------------
 
+def heat_snapshot(s):
+    hs = s["heating_schedule"]
+    now = dt.datetime.now(ZoneInfo(s["timezone"]))
+    label, temp = heat_wanted(hs, now)
+    nxt = heat_next_change(hs, now)
+    return {**hs, "now": label, "now_temp": temp,
+            "next": nxt.strftime("%a %H:%M" if nxt and nxt.date() != now.date() else "%H:%M") if nxt else None}
+
+
 def snapshot(app):
     s = app["settings"]
     tz = ZoneInfo(s["timezone"])
@@ -600,6 +768,8 @@ def snapshot(app):
         "history": app["history"].items,
         "presets": s["lamp_presets"],
         "sensors": app["sensors"].status(),
+        "thermostat": app["thermostat"].status(),
+        "heating_schedule": heat_snapshot(s),
         "music": app["music"].status(),
         "bluetooth": app.get("bluetooth"),
     }
@@ -643,7 +813,8 @@ async def api_lamp(request):
 
 def clean_automation(body, existing_id=None):
     device = body.get("device")
-    actions = {"curtain": {"open", "close", "position"}, "lamp": {"on", "off"}, "music": {"play", "pause"}}
+    actions = {"curtain": {"open", "close", "position"}, "lamp": {"on", "off"}, "music": {"play", "pause"},
+               "heating": {"target", "off"}}
     if device not in actions or body.get("action") not in actions[device]:
         raise web.HTTPBadRequest(text="bad device/action")
     if body.get("trigger") not in {"time", "sunrise", "sunset"}:
@@ -661,6 +832,8 @@ def clean_automation(body, existing_id=None):
             out["brightness"] = max(1, min(100, int(body["brightness"])))
         if body.get("kelvin"):
             out["kelvin"] = max(2000, min(9000, int(body["kelvin"])))
+    if device == "heating" and body["action"] == "target":
+        out["temperature"] = max(5.0, min(30.0, round(float(body.get("temperature") or 21) * 2) / 2))
     if device != "music" and body.get("music_on"):
         out["music_on"] = 1
         out["music_uri"] = str(body.get("music_uri") or "") or None
@@ -674,6 +847,42 @@ def clean_automation(body, existing_id=None):
         out["volume"] = max(0, min(100, int(body.get("volume") or 20)))
         out["shuffle"] = bool(body.get("shuffle", False))
     return out
+
+
+async def api_heating(request):
+    body = await request.json()
+    t = request.app["thermostat"]
+    if body.get("action") == "mode" and body.get("mode") in Thermostat.MODES:
+        ok = await t.command("mode", body["mode"])
+    elif body.get("action") == "target":
+        ok = await t.command("target", max(5.0, min(30.0, round(float(body["value"]) * 2) / 2)))
+    else:
+        raise web.HTTPBadRequest(text="bad action")
+    return web.json_response({"ok": ok, "thermostat": t.status()})
+
+
+def _hhmm(v):
+    dt.time.fromisoformat(v)
+    return v[:5]
+
+
+async def api_heating_schedule(request):
+    s, body = request.app["settings"], await request.json()
+    hs = s["heating_schedule"]
+    if "enabled" in body:
+        hs["enabled"] = bool(body["enabled"])
+    for k in ("home", "save"):
+        if k in body:
+            hs[k] = max(5.0, min(30.0, round(float(body[k]) * 2) / 2))
+    if isinstance(body.get("periods"), list):
+        hs["periods"] = [{"id": str(p.get("id") or uuid.uuid4().hex[:6]),
+                          "days": sorted({int(d) for d in p.get("days", []) if 0 <= int(d) <= 6}) or [0, 1, 2, 3, 4],
+                          "from": _hhmm(p.get("from", "08:30")), "to": _hhmm(p.get("to", "17:30"))}
+                         for p in body["periods"]][:10]
+    save(SETTINGS_FILE, s)
+    request.app.get("state", {}).pop("heat_applied", None)  # apply the (changed) schedule right away
+    asyncio.create_task(apply_heat_schedule(request.app, request.app.get("state", {})))
+    return web.json_response(snapshot(request.app))
 
 
 async def api_music(request):
@@ -849,6 +1058,7 @@ async def on_startup(app):
     def on_adv(device, adv_data):
         app["curtain"].on_adv(device, adv_data)
         app["sensors"].on_adv(device, adv_data)
+        app["thermostat"].on_adv(device, adv_data)
     app["scanner"] = BleakScanner(detection_callback=on_adv)
     app["tasks"] = [asyncio.create_task(scheduler(app)), asyncio.create_task(lamp_poller(app)),
                     asyncio.create_task(music_poller(app)), asyncio.create_task(bluetooth(app))]
@@ -891,6 +1101,10 @@ def main():
         save(SETTINGS_FILE, settings)
     app["curtain"].on_found = remember_curtain
     app["sensors"] = Sensors()
+    settings.setdefault("thermostat", {"address": "", "mac": ""})
+    settings.setdefault("heating_schedule", json.loads(json.dumps(HEAT_DEFAULT)))
+    app["thermostat"] = Thermostat(settings["thermostat"], history)
+    app["thermostat"].on_found = lambda: save(SETTINGS_FILE, settings)
     app["push"] = Push(DATA, CONFIG_DIR)
     app["music"] = Music(settings["music"], history)
     app["music"].on_config_change = lambda: save(SETTINGS_FILE, settings)
@@ -908,6 +1122,8 @@ def main():
         web.post("/api/curtain", api_curtain),
         web.post("/api/lamp", api_lamp),
         web.post("/api/music", api_music),
+        web.post("/api/heating", api_heating),
+        web.post("/api/heating/schedule", api_heating_schedule),
         web.get("/api/music/playlists", api_music_playlists),
         web.post("/api/music/volume/{dir:up|down}", api_music_step),
         web.get("/api/music/art", api_music_art),

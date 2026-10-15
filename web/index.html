@@ -103,6 +103,30 @@ main { overflow-x: clip; }
 .nrow .bell { font-size: 22px; } .nrow .t { font-weight: 600; } .nrow .d { color: var(--muted); font-size: 14px; }
 .nrow .btn { flex: none; }
 
+.heat { text-align: center; }
+.heat .room { font-size: 60px; font-weight: 700; letter-spacing: -2px; line-height: 1; font-variant-numeric: tabular-nums; }
+.heat .room small { display: block; font-size: 14px; font-weight: 500; letter-spacing: 0; color: var(--muted); margin-top: 6px; }
+.heat .target { display: flex; align-items: center; justify-content: center; gap: 26px; margin: 22px 0 6px; }
+.heat .tv { font-size: 34px; font-weight: 700; font-variant-numeric: tabular-nums; color: #ff6b35; min-width: 96px; }
+.heat .target small { color: var(--muted); font-size: 13px; }
+.heat .tb { width: 60px; height: 60px; font-size: 30px; font-weight: 500; background: var(--fill); }
+.heat .tb:disabled { opacity: .35; }
+.heat .warn { color: #ff9f0a; }
+.hs-note { color: var(--muted); font-size: 14px; margin: 12px 2px 0; }
+.hs-now { margin: 14px 2px 4px; font-size: 15px; } .hs-now b { color: #ff6b35; }
+.hs-row { display: flex; align-items: center; gap: 10px; padding: 12px 0; border-top: 1px solid var(--line); }
+.hs-row:first-of-type { border-top: 0; }
+.hs-row .lbl { flex: 1; font-weight: 500; } .hs-row .lbl small { display: block; color: var(--muted); font-weight: 400; font-size: 13px; }
+.step { display: flex; align-items: center; gap: 8px; }
+.step button { width: 36px; height: 36px; border-radius: 50%; background: var(--fill); font-size: 20px; }
+.step b { min-width: 52px; text-align: center; font-variant-numeric: tabular-nums; }
+.period { padding: 12px 0; border-top: 1px solid var(--line); }
+.period .times { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+.period .times input { flex: 1; } .period .times .x2 { color: var(--danger); padding: 6px 8px; font-size: 15px; }
+.period .days button { width: 34px; height: 34px; font-size: 13px; }
+.addp { color: var(--accent); font-weight: 600; padding: 12px 0 2px; }
+.tile.heating-on .ico { background: #ff6b3533; color: #ff6b35; }
+
 /* curtain */
 .window { height: 190px; border-radius: 14px; position: relative; overflow: hidden;
   background: linear-gradient(#5aa9e6, #bfe0f7 70%, #e9f5fd); }
@@ -238,6 +262,7 @@ details summary::-webkit-details-marker { display: none; }
     <symbol id="i-play" viewBox="0 0 24 24" fill="currentColor"><path d="M7 4.5v15a1 1 0 0 0 1.5.9l12-7.5a1 1 0 0 0 0-1.8l-12-7.5A1 1 0 0 0 7 4.5z"/></symbol>
     <symbol id="i-pause" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4.5" height="16" rx="1.2"/><rect x="13.5" y="4" width="4.5" height="16" rx="1.2"/></symbol>
     <symbol id="i-next" viewBox="0 0 24 24" fill="currentColor"><path d="M4 5.5v13a1 1 0 0 0 1.6.8l9-6.5a1 1 0 0 0 0-1.6l-9-6.5A1 1 0 0 0 4 5.5z"/><rect x="17" y="5" width="3" height="14" rx="1"/></symbol>
+    <symbol id="i-heat" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 14.8V5a2 2 0 0 0-4 0v9.8a4 4 0 1 0 4 0z"/><path d="M12 11v6"/></symbol>
     <symbol id="i-chev" viewBox="0 0 8 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 1l6 6-6 6"/></symbol>
     <symbol id="i-back" viewBox="0 0 12 20" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M10 2L2 10l8 8"/></symbol>
   </svg>
@@ -255,6 +280,11 @@ details summary::-webkit-details-marker { display: none; }
       <button class="tile" data-go="lamp" id="tile-lamp">
         <div class="ico"><svg><use href="#i-lamp"/></svg></div>
         <div><div class="name">Lamp</div><div class="st" id="t-lamp">–</div></div>
+        <svg class="chev" width="8" height="14"><use href="#i-chev"/></svg>
+      </button>
+      <button class="tile" data-go="heating" id="tile-heating" hidden>
+        <div class="ico"><svg><use href="#i-heat"/></svg></div>
+        <div class="tclip"><div class="name">Heating</div><div class="st" id="t-heating">–</div></div>
         <svg class="chev" width="8" height="14"><use href="#i-chev"/></svg>
       </button>
       <button class="tile" data-go="music" id="tile-music">
@@ -325,6 +355,36 @@ details summary::-webkit-details-marker { display: none; }
         <li>Govee app → Profile → ⚙️ → <b>Apply for API Key</b>, then save it as <code>~/.config/nofuss-home/govee.key</code>.</li>
       </ol>
     </div>
+  </section>
+
+  <!-- HEATING -->
+  <section class="view" id="v-heating">
+    <div class="top"><button class="back" data-go="home"><svg><use href="#i-back"/></svg>Home</button></div>
+    <h1>Heating</h1>
+    <div class="card heat">
+      <div class="room"><span id="h-cur">–</span><small>in the room</small></div>
+      <div class="target">
+        <button class="cb tb" id="h-down" aria-label="Colder">−</button>
+        <div><div class="tv" id="h-target">–</div><small id="h-tlabel">target</small></div>
+        <button class="cb tb" id="h-up" aria-label="Warmer">+</button>
+      </div>
+      <div class="field"><div class="seg" id="h-modes">
+        <button data-mode="comfort">Comfort</button><button data-mode="eco">Eco</button><button data-mode="manual">Manual</button>
+        <button data-mode="boost">Boost</button><button data-mode="off">Off</button>
+      </div></div>
+      <div class="devname" id="h-meta"></div>
+    </div>
+    <div class="label">Control</div>
+    <div class="card">
+      <div class="seg" id="hs-mode"><button data-v="0">Constant</button><button data-v="1">Schedule</button></div>
+      <div id="hs-body"></div>
+    </div>
+    <div class="card setup" id="h-setup" hidden>
+      <p><b>Read-only for now.</b> This thermostat encrypts its controls. Fetch its key once on the Mac:</p>
+      <ol><li><code>.venv/bin/python scripts/switchbot_key.py <span id="h-mac">MAC</span></code></li><li>Enter your SwitchBot login (only used to fetch the key, never stored).</li></ol>
+    </div>
+    <div class="label">Automations</div>
+    <div id="h-autos"></div>
   </section>
 
   <!-- MUSIC -->
@@ -656,6 +716,7 @@ initPush();
 const sunAt = (trig) => trig === "sunset" ? S.sun.sunset : S.sun.sunrise;
 function autoTitle(a) {
   if (a.device === "music") return a.action === "pause" ? "Pause music" : "Play " + (a.playlist_name || "music");
+  if (a.device === "heating") return a.action === "off" ? "Heating off" : `Heat to ${a.temperature ?? 21}°`;
   if (a.device === "curtain") return a.action === "open" ? "Open curtain" : a.action === "close" ? "Close curtain" : `Curtain to ${a.position}%`;
   return a.action === "off" ? "Lamp off" : "Lamp on" + (a.brightness ? ` · ${a.brightness}%` : "");
 }
@@ -692,12 +753,15 @@ function playlistOptions(uri, name, emptyLabel) {
     ${uri && !(playlists || []).some(p => p.uri === uri) ? `<option value="${uri}" selected>${esc(name || "Playlist")}</option>` : ""}`;
 }
 function autoCard(a) {
-  const icon = a.device === "curtain" ? "i-curtain" : a.device === "music" ? "i-music" : "i-lamp";
+  const icon = { curtain: "i-curtain", music: "i-music", heating: "i-heat" }[a.device] || "i-lamp";
   const val = (f) => a[f] ?? { music_on: 0, music_shuffle: 1, music_volume: 20 }[f];
   const seg = (field, opts) => `<div class="seg" data-f="${field}">${opts.map(([v, l, s]) =>
     `<button data-v="${v}" class="${String(val(field)) === String(v) ? "on" : ""}">${l}${s ? `<small>${s}</small>` : ""}</button>`).join("")}</div>`;
   const actionOpts = a.device === "curtain" ? [["open", "Open"], ["close", "Close"]]
-    : a.device === "music" ? [["play", "Play"], ["pause", "Pause"]] : [["on", "On"], ["off", "Off"]];
+    : a.device === "music" ? [["play", "Play"], ["pause", "Pause"]]
+    : a.device === "heating" ? [["target", "Set temperature"], ["off", "Off"]] : [["on", "On"], ["off", "Off"]];
+  const heatFields = a.device === "heating" && a.action === "target"
+    ? `<div class="field"><span>Temperature</span>${seg("temperature", [17, 18, 19, 20, 21, 22, 23].map(v => [v, v + "°"]))}</div>` : "";
   const musicFields = a.device === "music" && a.action === "play" ? `
       <div class="field"><span>Playlist</span><select class="autosel" data-uri>
         <option value="">Resume what was playing</option>
@@ -719,8 +783,9 @@ function autoCard(a) {
       <label class="switch" data-stop><input type="checkbox" switch data-enabled ${a.enabled ? "checked" : ""}><span></span></label>
     </div>
     <div class="edit">
-      <div class="field"><span>Device</span>${seg("device", [["curtain", "Curtain"], ["lamp", "Lamp"], ["music", "Music"]])}</div>
-      <div class="field"><span>Action</span>${seg("action", actionOpts)}</div>${musicFields}${alsoMusic}
+      <div class="field"><span>Device</span>${seg("device", [["curtain", "Curtain"], ["lamp", "Lamp"], ["music", "Music"]]
+        .concat(S.thermostat?.found || a.device === "heating" ? [["heating", "Heating"]] : []))}</div>
+      <div class="field"><span>Action</span>${seg("action", actionOpts)}</div>${heatFields}${musicFields}${alsoMusic}
       <div class="field"><span>When</span>${seg("trigger", [["time", "Time"], ["sunrise", "Sunrise", S.sun.sunrise || "no location"], ["sunset", "Sunset", S.sun.sunset || "no location"]])}</div>
       ${a.trigger === "time" ? `<div class="field"><input type="time" data-time value="${a.time}"></div>` : ""}
       <div class="field"><span>Repeat</span><div class="seg" data-once><button data-v="1" class="${a.once ? "on" : ""}">Once</button><button data-v="0" class="${a.once ? "" : "on"}">Repeat</button></div></div>
@@ -749,7 +814,8 @@ function bindAutos(container) {
       const f = segBtn.parentElement.dataset.f;
       const patch = { [f]: f.startsWith("music_") ? +segBtn.dataset.v : segBtn.dataset.v };
       if (f === "music_on" && patch.music_on) Object.assign(patch, { music_volume: a.music_volume ?? 20, music_shuffle: a.music_shuffle ?? 1 });
-      if (f === "device") patch.action = { curtain: "open", lamp: "on", music: "play" }[segBtn.dataset.v];
+      if (f === "device") patch.action = { curtain: "open", lamp: "on", music: "play", heating: "target" }[segBtn.dataset.v];
+      if (f === "device" && segBtn.dataset.v === "heating") patch.temperature = 21;
       return saveAuto(id, patch);
     }
     const day = e.target.closest("[data-day]");
@@ -780,7 +846,7 @@ function bindAutos(container) {
     }
   };
 }
-["a-list", "c-autos", "l-autos"].forEach(id => bindAutos($(id)));
+["a-list", "c-autos", "l-autos", "h-autos"].forEach(id => bindAutos($(id)));
 async function addAuto(device) {
   try {
     S = await api("/api/automations", "POST", device === "lamp" ? { device, action: "on", trigger: "sunset", time: "20:00", days: [0,1,2,3,4,5,6] }
@@ -843,6 +909,91 @@ $("m-lists").onclick = (e) => {
   music({ action: "playlist", uri: b.dataset.uri, shuffle }).then(() => renderPlaylists());
 };
 let lastArt = null;
+/* ---------- heating ---------- */
+let heatPending = null, heatTimer = null;
+function heatSend(body) {
+  return api("/api/heating", "POST", body).then(r => { if (!r.ok) toast("Thermostat didn't respond"); S.thermostat = r.thermostat; heatPending = null; render(); })
+    .catch(e => { toast("Error: " + e.message); heatPending = null; render(); });
+}
+function heatStep(d) {
+  const t = S.thermostat, base = heatPending ?? t.target ?? 21;
+  heatPending = Math.max(5, Math.min(30, Math.round((base + d) * 2) / 2));
+  render(); clearTimeout(heatTimer);
+  heatTimer = setTimeout(() => heatSend({ action: "target", value: heatPending }), 900);  // wait for the last tap
+}
+$("h-up").onclick = () => heatStep(0.5);
+$("h-down").onclick = () => heatStep(-0.5);
+$("h-modes").onclick = (e) => { const b = e.target.closest("[data-mode]"); if (!b) return;
+  S.thermostat.mode = b.dataset.mode; render(); heatSend({ action: "mode", mode: b.dataset.mode }); };
+const modeName = (m) => ({ comfort: "Comfort", eco: "Eco", manual: "Manual", boost: "Boost", off: "Off", schedule: "Schedule" }[m] || m || "–");
+/* schedule */
+let hsTimer = null;
+function hsSave(patch, delay = 0) {
+  Object.assign(S.heating_schedule, patch); renderSchedule(true);
+  clearTimeout(hsTimer);
+  hsTimer = setTimeout(() => api("/api/heating/schedule", "POST", patch).then(r => { S = r; render(); })
+    .catch(e => toast("Error: " + e.message)), delay);
+}
+const fmtT = (v) => (+v).toFixed(1) + "°";
+function renderSchedule(force) {
+  const hs = S.heating_schedule; if (!hs) return;
+  document.querySelectorAll("#hs-mode button").forEach(b => b.classList.toggle("on", (b.dataset.v === "1") === !!hs.enabled));
+  if (!force && document.activeElement?.closest("#hs-body")) return;  // don't redraw under a time picker
+  const body = !hs.enabled
+    ? `<p class="hs-note">Holds the target temperature above, all day.</p>`
+    : `<div class="hs-now">Now: <b>${hs.now === "save" ? "saving" : "at home"} · ${fmtT(hs.now_temp)}</b>${hs.next ? ` — switches ${hs.next}` : ""}</div>
+      <div class="hs-row"><div class="lbl">🏠 At home<small>whenever you're not in a saving time</small></div>
+        <div class="step"><button data-st="home" data-d="-0.5">−</button><b>${fmtT(hs.home)}</b><button data-st="home" data-d="0.5">+</button></div></div>
+      <div class="hs-row"><div class="lbl">🌙 Saving<small>while you're out or asleep</small></div>
+        <div class="step"><button data-st="save" data-d="-0.5">−</button><b>${fmtT(hs.save)}</b><button data-st="save" data-d="0.5">+</button></div></div>
+      <div class="label" style="margin:18px 2px 4px">Saving times</div>
+      ${hs.periods.map((p, i) => `<div class="period" data-i="${i}">
+        <div class="days">${DAYS.map((d, j) => `<button data-pday="${j}" class="${p.days.includes(j) ? "on" : ""}">${d}</button>`).join("")}</div>
+        <div class="times"><input type="time" data-pf="from" value="${p.from}"><span>–</span><input type="time" data-pf="to" value="${p.to}">
+          <button class="x2" data-pdel>Remove</button></div></div>`).join("")}
+      <button class="addp" id="hs-add">+ Add saving time</button>
+      ${S.thermostat?.controllable ? "" : `<p class="hs-note">Takes effect once the thermostat key is set up (see below).</p>`}`;
+  if ($("hs-body")._html !== body) { $("hs-body").innerHTML = body; $("hs-body")._html = body; armHaptics($("hs-body")); }
+}
+$("hs-mode").onclick = (e) => { const b = e.target.closest("button[data-v]"); if (b) hsSave({ enabled: b.dataset.v === "1" }); };
+$("hs-body").onclick = (e) => {
+  const hs = S.heating_schedule, st = e.target.closest("[data-st]");
+  if (st) { const k = st.dataset.st; return hsSave({ [k]: Math.max(5, Math.min(30, hs[k] + +st.dataset.d)) }, 700); }
+  const periods = hs.periods.map(p => ({ ...p, days: [...p.days] }));
+  if (e.target.closest("#hs-add")) { periods.push({ days: [0, 1, 2, 3, 4], from: "08:30", to: "17:30" }); return hsSave({ periods }); }
+  const row = e.target.closest(".period"); if (!row) return;
+  const p = periods[+row.dataset.i];
+  const day = e.target.closest("[data-pday]");
+  if (day) { const d = +day.dataset.pday; p.days = p.days.includes(d) ? p.days.filter(x => x !== d) : [...p.days, d].sort();
+    if (!p.days.length) return toast("Pick at least one day"); return hsSave({ periods }); }
+  if (e.target.closest("[data-pdel]")) { periods.splice(+row.dataset.i, 1); return hsSave({ periods }); }
+};
+$("hs-body").onchange = (e) => {
+  const f = e.target.dataset.pf, row = e.target.closest(".period"); if (!f || !row || !e.target.value) return;
+  const periods = S.heating_schedule.periods.map(p => ({ ...p })); periods[+row.dataset.i][f] = e.target.value;
+  e.target.blur(); hsSave({ periods });
+};
+
+function renderHeating() {
+  const t = S.thermostat || {};
+  $("tile-heating").hidden = !t.found;
+  if (!t.found) return;
+  const target = heatPending ?? t.target, off = t.mode === "off";
+  $("t-heating").textContent = t.current == null ? "Waiting for thermostat…"
+    : `${t.current.toFixed(1)}° · ` + (off ? "off" : `heating to ${target}°` + (S.heating_schedule?.enabled ? ` · schedule (${S.heating_schedule.now === "save" ? "saving" : "home"})` : "")) + (t.window_open ? " · window open" : "");
+  $("tile-heating").classList.toggle("heating-on", !off && t.current != null && t.target > t.current);
+  $("h-cur").textContent = t.current == null ? "–" : t.current.toFixed(1) + "°";
+  $("h-target").textContent = off ? "Off" : t.mode === "boost" ? "Max" : target == null ? "–" : (+target).toFixed(1) + "°";
+  $("h-tlabel").textContent = heatPending != null ? "setting…" : "target";
+  ["h-up", "h-down"].forEach(id => $(id).disabled = !t.controllable);
+  document.querySelectorAll("#h-modes [data-mode]").forEach(b => { b.classList.toggle("on", b.dataset.mode === t.mode); b.disabled = !t.controllable; });
+  $("h-meta").innerHTML = [t.battery != null ? `Battery ${t.battery}%` : "", t.window_open ? `<span class="warn">Window open — heating paused</span>` : "",
+    t.fault ? `<span class="warn">Fault ${t.fault}</span>` : ""].filter(Boolean).join(" · ");
+  $("h-setup").hidden = !!t.controllable;
+  renderSchedule();
+  $("h-mac").textContent = t.mac || "MAC";
+}
+
 function renderMusic() {
   const m = S.music || {}, playing = m.state === "PLAYING";
   const line = m.title ? `${m.title}${m.artist ? " – " + m.artist : ""}` : "";
@@ -909,6 +1060,7 @@ function render() {
 
   renderOther();
   renderMusic();
+  renderHeating();
   // home
   $("sunline").textContent = S.sun.sunrise ? `Sunrise ${S.sun.sunrise} · Sunset ${S.sun.sunset}` : "Tip: set your location in data/settings.json for sunrise & sunset";
   $("t-curtain").textContent = S.bluetooth === false ? "Allow Bluetooth for Python on the Mac (System Settings)"
@@ -932,6 +1084,8 @@ function render() {
     $("c-autos").innerHTML = cAutos.map(autoCard).join("") || `<div class="card list"><div><span class="m">None</span></div></div>`;
     const lAutos = S.automations.filter(a => a.device === "lamp");
     $("l-autos").innerHTML = lAutos.map(autoCard).join("") || `<div class="card list"><div><span class="m">None</span></div></div>`;
+    const hAutos = S.automations.filter(a => a.device === "heating");
+    $("h-autos").innerHTML = hAutos.map(autoCard).join("") || `<div class="card list"><div><span class="m">None yet — add one under Automations</span></div></div>`;
     $("a-list").innerHTML = S.automations.map(autoCard).join("");
   }
   $("a-sub").textContent = `${active.length} of ${S.automations.length} active`;

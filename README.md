@@ -13,6 +13,7 @@ automations like *"open the curtain at 7:30 and play my morning playlist"* in a 
 
 - **Curtain (SwitchBot)**: open, close, or drag to any position. It uses the Mac's own Bluetooth, so **no SwitchBot hub is needed**.
 - **Lamp (Govee)**: on/off, brightness, warm/cool white and colors. **Favorites** are one-tap looks (Cozy, Reading, Movie Night…); long-press to reorder or delete, and "Save current" adds your own. Multi-zone lamps like the Govee Uplighter get **Top / Middle / Bottom** switches.
+- **Heating (SwitchBot Smart Radiator Thermostat)**: room and target temperature, −/+ control, and **Constant** or **Schedule** mode. Schedule mode uses an *At home* and a *Saving* temperature plus saving times (e.g. Mon–Fri 08:30–17:30). An open-window warning is included.
 - **Music (Sonos + Spotify)**: now playing with album art, play/pause/skip, volume, and all your Spotify playlists one tap away. Playback goes straight to Sonos, so it starts fast.
 - **Automations**, all in one list:
   - Triggers: a time, **sunrise** or **sunset**.
@@ -38,6 +39,7 @@ automations like *"open the curtain at 7:30 and play my morning playlist"* in a 
 | Device | How it connects | Notes |
 |---|---|---|
 | SwitchBot Curtain (1/2/3) | Bluetooth from the Mac | The Mac must be within Bluetooth range (same room is ideal). No hub. |
+| SwitchBot Smart Radiator Thermostat | Bluetooth (encrypted) | Readings work right away. Control needs a one-time key: `.venv/bin/python scripts/switchbot_key.py <MAC>`. Keep the SwitchBot app closed, because it blocks the connection. |
 | SwitchBot Meter / Meter Pro / Meter Pro CO2 | Bluetooth (passive) | Readings are broadcast; nothing to pair. |
 | Govee Wi-Fi lamps & lights | Govee **LAN Control** (local) | Turn on "LAN Control" in the Govee app. An optional API key unlocks zone switches. |
 | Sonos speakers & groups | Local network | Plays your Spotify playlists if Spotify is linked in the Sonos app. |
