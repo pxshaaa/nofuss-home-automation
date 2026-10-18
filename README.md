@@ -100,6 +100,17 @@ iPhones only allow push for home-screen web apps opened over **HTTPS**. With Tai
    tailscale serve --bg --https=8443 http://127.0.0.1:8765
    ```
 3. On your iPhone, open `https://<mac-name>.<tailnet>.ts.net:8443` in Safari, then Share → *Add to Home Screen*.
+
+> **Using Tailscale Funnel for anything else on the same Mac?** Funnel publishes the Mac's name in public DNS,
+> and phones then send `https://<mac-name>…:8443` to Tailscale's public relays, which reject it. Give the app its
+> own node name instead (a second, userspace `tailscaled` that only serves this app):
+> ```bash
+> D=~/.config/nofuss-home/tailscale-home
+> tailscaled --tun=userspace-networking --statedir=$D --socket=$D/tailscaled.sock --port=0   # run as a LaunchAgent
+> tailscale --socket=$D/tailscaled.sock up --hostname=home
+> tailscale --socket=$D/tailscaled.sock serve --bg --https=443 http://127.0.0.1:8765
+> ```
+> Then use `https://home.<tailnet>.ts.net` instead.
 4. In the app, go to **Automations → 🔔 Turn on** and tap Allow. A test notification arrives right away.
 
 ### iPhone volume buttons → Sonos volume
