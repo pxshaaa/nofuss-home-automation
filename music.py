@@ -134,7 +134,15 @@ class Music:
             # random: start at a random song (Sonos shuffle alone would always begin with song 1)
             z.play_from_queue(random.randrange(max(1, z.queue_size)) if shuffle else 0)
         elif action == "play":
-            z.play()
+            # after AirPlay/TV the speaker's source is that stream; resuming it plays silence
+            if z.get_current_media_info().get("uri", "").startswith("x-rincon-queue:"):
+                z.play()
+            elif z.queue_size:
+                z.play_from_queue(0)
+            elif self.cfg.get("last_playlist"):
+                self._do("playlist", self.cfg["last_playlist"]["uri"], None, shuffle)
+            else:
+                z.play()
         elif action == "pause":
             z.pause()
         elif action == "next":
