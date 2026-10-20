@@ -372,6 +372,7 @@ details summary::-webkit-details-marker { display: none; }
         <button data-mode="comfort">Comfort</button><button data-mode="eco">Eco</button><button data-mode="manual">Manual</button>
         <button data-mode="boost">Boost</button><button data-mode="off">Off</button>
       </div></div>
+      <div class="field"><small class="hs-note">Measure the room with</small><div class="seg" id="h-sensor"></div></div>
       <div class="devname" id="h-meta"></div>
     </div>
     <div class="label">Control</div>
@@ -923,6 +924,8 @@ function heatStep(d) {
 }
 $("h-up").onclick = () => heatStep(0.5);
 $("h-down").onclick = () => heatStep(-0.5);
+$("h-sensor").onclick = (e) => { const b = e.target.closest("[data-sensor]"); if (!b) return;
+  S.thermostat.room_sensor = b.dataset.sensor; render(); heatSend({ action: "sensor", sensor: b.dataset.sensor }); };
 $("h-modes").onclick = (e) => { const b = e.target.closest("[data-mode]"); if (!b) return;
   S.thermostat.mode = b.dataset.mode; render(); heatSend({ action: "mode", mode: b.dataset.mode }); };
 const modeName = (m) => ({ comfort: "Comfort", eco: "Eco", manual: "Manual", boost: "Boost", off: "Off", schedule: "Schedule" }[m] || m || "–");
@@ -987,7 +990,14 @@ function renderHeating() {
   $("h-tlabel").textContent = heatPending != null ? "setting…" : "target";
   ["h-up", "h-down"].forEach(id => $(id).disabled = !t.controllable);
   document.querySelectorAll("#h-modes [data-mode]").forEach(b => { b.classList.toggle("on", b.dataset.mode === t.mode); b.disabled = !t.controllable; });
-  $("h-meta").innerHTML = [t.battery != null ? `Battery ${t.battery}%` : "", t.window_open ? `<span class="warn">Window open — heating paused</span>` : "",
+  const meters = (S.sensors || []).filter(m => m.temp != null);
+  const sensorHtml = [["", "Thermostat"], ...meters.map(m => [m.id, m.name])]
+    .map(([id, name]) => `<button data-sensor="${id}" class="${(t.room_sensor || "") === id ? "on" : ""}">${name}</button>`).join("");
+  if ($("h-sensor")._html !== sensorHtml) { $("h-sensor").innerHTML = sensorHtml; $("h-sensor")._html = sensorHtml; armHaptics($("h-sensor")); }
+  $("h-sensor").parentElement.hidden = !meters.length;
+  $("h-sensor").querySelectorAll("button").forEach(b => b.disabled = !t.controllable);
+  $("h-meta").innerHTML = [t.following && t.own != null ? `Thermostat itself reads ${t.own.toFixed(1)}° · set to ${t.sent}°` : "",
+    t.battery != null ? `Battery ${t.battery}%` : "", t.window_open ? `<span class="warn">Window open — heating paused</span>` : "",
     t.fault ? `<span class="warn">Fault ${t.fault}</span>` : ""].filter(Boolean).join(" · ");
   $("h-setup").hidden = !!t.controllable;
   renderSchedule();

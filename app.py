@@ -199,13 +199,54 @@ class Thermostat:
     one-time key from scripts/switchbot_key.py (saved in ~/.config/nofuss-home/switchbot_keys.json)."""
 
     MODES = ["comfort", "eco", "manual", "boost", "off"]
+    FOLLOW_EVERY = 600  # seconds between room-meter corrections (each one wakes the thermostat's radio)
+    STALE = 900  # ignore readings older than this
 
     def __init__(self, cfg, history):
-        self.cfg = cfg  # {"address": "", "mac": ""}
+        self.cfg = cfg  # {"address": "", "mac": "", "room_sensor": meter address, "desired": room °C}
         self.history = history
         self.data, self.ble, self.seen_at, self.dev = {}, None, None, None
         self.lock = asyncio.Lock()
-        self.on_found = lambda: None
+        self.on_found = lambda: None  # also called when cfg changes, to save it
+        self.rooms = lambda: {}  # meter address -> {"temp", "seen", ...}, set by main()
+        self.followed_at = 0
+
+    def room_temp(self):
+        """Temperature from the chosen room meter, or None when none is chosen or it went quiet."""
+        r = self.rooms().get(self.cfg.get("room_sensor") or "")
+        if not r or r.get("temp") is None or time.time() - (r.get("seen") or 0) > self.STALE:
+            return None
+        return r["temp"]
+
+    def setpoint(self, wanted, exact=False):
+        """Target to send so the *room* reaches `wanted`. The thermostat regulates on its own sensor at the
+        radiator, so shift the target by how far that sensor is off from the room meter."""
+        room, own = self.room_temp(), self.data.get("temperature")
+        if room is None or own is None or not self.seen_at \
+                or (dt.datetime.now() - self.seen_at).total_seconds() > self.STALE:
+            return wanted
+        v = max(5.0, min(30.0, wanted + own - room))
+        return v if exact else round(v * 2) / 2
+
+    async def follow_room(self):
+        """While a room meter is in charge, keep the thermostat target tracking it."""
+        wanted, sent = self.cfg.get("desired"), self.data.get("target_temperature")
+        if wanted is None or sent is None or self.room_temp() is None or self.data.get("mode") != "manual" \
+                or self.lock.locked() or time.time() - self.followed_at < self.FOLLOW_EVERY:
+            return
+        if abs(self.setpoint(wanted, exact=True) - sent) < 0.5:  # close enough; don't flap between half steps
+            return
+        target = self.setpoint(wanted)
+        self.followed_at = time.time()
+        async with self.lock:
+            try:
+                if await self._device().set_target_temperature(target) is not False:
+                    self.data["target_temperature"] = target
+                    log.info("room %.1f° (thermostat %.1f°) → thermostat target %g° for %g°", self.room_temp(),
+                             self.data.get("temperature"), target, wanted)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("room follow failed: %s", exc)
+                self.dev = None
 
     def on_adv(self, device, adv_data):
         if self.cfg.get("address") and device.address != self.cfg["address"]:
@@ -256,7 +297,13 @@ class Thermostat:
                             await dev.set_preset_mode("manual")
                             self.data["mode"] = "manual"
                             await asyncio.sleep(1)
-                        ok = await dev.set_target_temperature(float(value))
+                        self.cfg["desired"] = float(value)
+                        self.on_found()
+                        target = self.setpoint(float(value))
+                        ok = await dev.set_target_temperature(target)
+                        if ok is not False:
+                            self.data["target_temperature"] = target
+                        self.followed_at = time.time()
                         text = f"Heating set to {float(value):g}°"
                     if ok is False:
                         raise RuntimeError("thermostat rejected command")
@@ -275,9 +322,14 @@ class Thermostat:
             return False
 
     def status(self):
-        d = self.data
+        d, room = self.data, self.room_temp()
+        # with a room meter in charge, "current"/"target" are the room's; "own"/"sent" are the thermostat's
+        following = room is not None and self.cfg.get("desired") is not None and d.get("mode") == "manual"
         return {"found": bool(self.cfg.get("address")), "seen": self.seen_at.isoformat() if self.seen_at else None,
-                "current": d.get("temperature"), "target": d.get("target_temperature"), "mode": d.get("mode"),
+                "current": d.get("temperature") if room is None else room, "own": d.get("temperature"),
+                "target": self.cfg["desired"] if following else d.get("target_temperature"),
+                "sent": d.get("target_temperature"), "room_sensor": self.cfg.get("room_sensor") or "",
+                "following": following, "mode": d.get("mode"),
                 "on": d.get("isOn"), "battery": d.get("battery"), "window_open": d.get("door_open"),
                 "fault": d.get("fault_code"), "controllable": bool(self.cfg.get("mac") and self.key()),
                 "mac": self.cfg.get("mac"),
@@ -707,6 +759,10 @@ async def scheduler(app):
         except Exception:  # noqa: BLE001
             log.exception("heating schedule failed")
         try:
+            await app["thermostat"].follow_room()
+        except Exception:  # noqa: BLE001
+            log.exception("room follow failed")
+        try:
             s = app["settings"]
             now = dt.datetime.now(ZoneInfo(s["timezone"]))
             for a in s["automations"]:
@@ -856,6 +912,12 @@ async def api_heating(request):
         ok = await t.command("mode", body["mode"])
     elif body.get("action") == "target":
         ok = await t.command("target", max(5.0, min(30.0, round(float(body["value"]) * 2) / 2)))
+    elif body.get("action") == "sensor" and (body.get("sensor") or "") in {"", *request.app["sensors"].devices}:
+        t.cfg["room_sensor"] = body.get("sensor") or ""
+        t.on_found()
+        wanted = t.cfg.get("desired") or t.data.get("target_temperature")
+        manual = t.data.get("mode") == "manual"
+        ok = await t.command("target", wanted, reason="room sensor") if wanted and manual else True
     else:
         raise web.HTTPBadRequest(text="bad action")
     return web.json_response({"ok": ok, "thermostat": t.status()})
@@ -1105,6 +1167,7 @@ def main():
     settings.setdefault("heating_schedule", json.loads(json.dumps(HEAT_DEFAULT)))
     app["thermostat"] = Thermostat(settings["thermostat"], history)
     app["thermostat"].on_found = lambda: save(SETTINGS_FILE, settings)
+    app["thermostat"].rooms = lambda: app["sensors"].devices
     app["push"] = Push(DATA, CONFIG_DIR)
     app["music"] = Music(settings["music"], history)
     app["music"].on_config_change = lambda: save(SETTINGS_FILE, settings)
