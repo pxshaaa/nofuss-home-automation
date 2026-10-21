@@ -201,6 +201,7 @@ class Thermostat:
     MODES = ["comfort", "eco", "manual", "boost", "off"]
     FOLLOW_EVERY = 600  # seconds between room-meter corrections (each one wakes the thermostat's radio)
     STALE = 900  # ignore readings older than this
+    GAIN = 3  # thermostat target = its own reading + GAIN x the room's shortfall
 
     def __init__(self, cfg, history):
         self.cfg = cfg  # {"address": "", "mac": "", "room_sensor": meter address, "desired": room °C}
@@ -220,12 +221,13 @@ class Thermostat:
 
     def setpoint(self, wanted, exact=False):
         """Target to send so the *room* reaches `wanted`. The thermostat regulates on its own sensor at the
-        radiator, so shift the target by how far that sensor is off from the room meter."""
+        radiator, so hand it the room's shortfall on top of its own reading, amplified: at 1:1 a small room gap
+        is a small gap for the thermostat too, and its smooth valve control then barely opens."""
         room, own = self.room_temp(), self.data.get("temperature")
         if room is None or own is None or not self.seen_at \
                 or (dt.datetime.now() - self.seen_at).total_seconds() > self.STALE:
             return wanted
-        v = max(5.0, min(30.0, wanted + own - room))
+        v = max(5.0, min(30.0, own + self.GAIN * (wanted - room)))
         return v if exact else round(v * 2) / 2
 
     async def follow_room(self):
