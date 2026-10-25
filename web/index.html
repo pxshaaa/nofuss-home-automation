@@ -1134,10 +1134,13 @@ async function refresh() {
     if (S && Date.now() < lampHold) fresh.lamp = { ...fresh.lamp, ...pick(S.lamp, ["on", "brightness", "kelvin", "rgb", "zones"]) };
     if (S && Date.now() < musicHold) fresh.music = S.music;
     S = fresh; render();
+    try { localStorage.setItem("lastState", JSON.stringify(fresh)); } catch {}
   } catch { $("sunline").textContent = "Mac mini not reachable"; }
 }
 const pick = (o, ks) => Object.fromEntries(ks.map(k => [k, o[k]]));
 
+// paint the last known state right away; the live one replaces it a moment later
+try { S = JSON.parse(localStorage.getItem("lastState")); } catch {}
 go(location.hash.slice(1) || "home", false);
 refresh();
 setInterval(refresh, 2500);

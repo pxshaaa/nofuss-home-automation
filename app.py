@@ -1092,7 +1092,17 @@ async def manifest(request):
 
 
 async def index(request):
-    return web.FileResponse(BASE / "web" / "index.html", headers={"Cache-Control": "no-cache"})
+    return web.Response(body=(BASE / "web" / "index.html").read_bytes(), content_type="text/html",
+                        headers={"Cache-Control": "no-cache"})
+
+
+@web.middleware
+async def compress(request, handler):
+    """gzip the page and JSON (77 KB -> ~20 KB): every byte counts on a cold start over Tailscale."""
+    resp = await handler(request)
+    if type(resp) is web.Response and not (resp.content_type or "").startswith("image/"):
+        resp.enable_compression()
+    return resp
 
 
 def start_watchdog(loop, timeout=45):
@@ -1155,7 +1165,7 @@ def main():
     settings = load(SETTINGS_FILE, DEFAULTS)
     save(SETTINGS_FILE, settings)
     history = History()
-    app = web.Application()
+    app = web.Application(middlewares=[compress])
     app["settings"] = settings
     app["history"] = history
     app["curtain"] = Curtain(settings["address"], history)
