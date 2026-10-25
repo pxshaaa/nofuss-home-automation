@@ -958,8 +958,11 @@ async def api_music(request):
         raise web.HTTPBadRequest(text="bad uri")
     vol = body.get("volume")
     vol = None if vol is None else max(0, min(100, int(vol)))
+    start = body.get("start")
+    if start is not None and not str(start).startswith("spotify:track:"):
+        raise web.HTTPBadRequest(text="bad start")
     ok = await request.app["music"].command(None if action == "volume" else action, body.get("uri"), vol,
-                                            bool(body.get("shuffle", False)))
+                                            bool(body.get("shuffle", False)), start=start)
     return web.json_response({"ok": ok, "music": request.app["music"].status()})
 
 
@@ -973,6 +976,16 @@ async def api_music_step(request):
 async def api_music_playlists(request):
     try:
         return web.json_response(await request.app["music"].playlists())
+    except Exception as exc:  # noqa: BLE001
+        raise web.HTTPBadGateway(text=f"Spotify: {exc}")
+
+
+async def api_music_tracks(request):
+    uri = request.query.get("uri", "")
+    if not uri.startswith("spotify:"):
+        raise web.HTTPBadRequest(text="bad uri")
+    try:
+        return web.json_response(await request.app["music"].tracks(uri))
     except Exception as exc:  # noqa: BLE001
         raise web.HTTPBadGateway(text=f"Spotify: {exc}")
 
@@ -1200,6 +1213,7 @@ def main():
         web.post("/api/heating", api_heating),
         web.post("/api/heating/schedule", api_heating_schedule),
         web.get("/api/music/playlists", api_music_playlists),
+        web.get("/api/music/tracks", api_music_tracks),
         web.post("/api/music/volume/{dir:up|down}", api_music_step),
         web.get("/api/music/art", api_music_art),
         web.post("/api/presets", api_preset_save),

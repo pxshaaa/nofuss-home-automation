@@ -96,6 +96,15 @@ main { overflow-x: clip; }
 .plist .pc { color: var(--muted); font-size: 13px; }
 .plist button.cur .pn { color: #1ed760; }
 .plist button.busy { opacity: .5; }
+.plist .ph.liked { display: grid; place-items: center; background: linear-gradient(135deg, #450af5, #8e8ee5); color: #fff; font-size: 20px; }
+.plist .pplay { flex: none; width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center; background: var(--fill); color: var(--text); }
+.plist .pplay svg { width: 16px; height: 16px; }
+.plist .chev { flex: none; width: 8px; height: 14px; color: var(--muted); }
+.plist .tn { width: 44px; flex: none; text-align: center; color: var(--muted); font-variant-numeric: tabular-nums; }
+.plist .pc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pl-head { display: flex; gap: 10px; margin: 4px 0 14px; }
+.pl-head button { flex: 1; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 12px; border-radius: 12px; background: var(--fill); color: #1ed760; font-weight: 600; font-size: 16px; }
+.pl-head svg { width: 18px; height: 18px; }
 .autosel { width: 100%; font: inherit; color: var(--text); background: var(--fill); border: 0; border-radius: 10px; padding: 9px 12px; -webkit-appearance: none; }
 
 .notify { padding: 14px 16px; }
@@ -263,6 +272,7 @@ details summary::-webkit-details-marker { display: none; }
     <symbol id="i-pause" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4.5" height="16" rx="1.2"/><rect x="13.5" y="4" width="4.5" height="16" rx="1.2"/></symbol>
     <symbol id="i-next" viewBox="0 0 24 24" fill="currentColor"><path d="M4 5.5v13a1 1 0 0 0 1.6.8l9-6.5a1 1 0 0 0 0-1.6l-9-6.5A1 1 0 0 0 4 5.5z"/><rect x="17" y="5" width="3" height="14" rx="1"/></symbol>
     <symbol id="i-heat" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 14.8V5a2 2 0 0 0-4 0v9.8a4 4 0 1 0 4 0z"/><path d="M12 11v6"/></symbol>
+    <symbol id="i-shuffle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 3h5v5M4 20 21 3M21 16v5h-5M15 15l6 6M4 4l5 5"/></symbol>
     <symbol id="i-chev" viewBox="0 0 8 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 1l6 6-6 6"/></symbol>
     <symbol id="i-back" viewBox="0 0 12 20" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M10 2L2 10l8 8"/></symbol>
   </svg>
@@ -407,6 +417,16 @@ details summary::-webkit-details-marker { display: none; }
     <div class="label rowlabel">Playlists <button id="m-shuf">Shuffle: off</button></div>
     <div class="card plist" id="m-lists"><div><span class="m">Loading…</span></div></div>
   </section>
+  <!-- ONE PLAYLIST -->
+  <section class="view" id="v-plist">
+    <div class="top"><button class="back" data-go="music"><svg><use href="#i-back"/></svg>Music</button></div>
+    <h1 id="pl-name">Playlist</h1>
+    <div class="pl-head">
+      <button id="pl-play"><svg><use href="#i-play"/></svg>Play</button>
+      <button id="pl-shuf"><svg><use href="#i-shuffle"/></svg>Shuffle</button>
+    </div>
+    <div class="card plist" id="pl-tracks"></div>
+  </section>
 
   <!-- OTHER DEVICES -->
   <section class="view" id="v-other">
@@ -469,6 +489,7 @@ const COLORS = [
 ];
 let S = null;            // last server snapshot
 let openAuto = null;     // id of the automation card being edited
+let openList = null;     // playlist shown in the songs view
 let curtainHold = null;  // {target, until}: keep the user's target on screen while the curtain moves
 let lampHold = 0;        // timestamp until which local lamp edits win over polled state
 
@@ -484,10 +505,12 @@ async function api(path, method = "GET", body) {
 
 /* ---------- navigation ---------- */
 function go(view, push = true) {
+  if (view === "plist" && !openList) view = "music";  // reload on #plist: nothing open
   document.querySelectorAll(".view").forEach(v => v.classList.toggle("active", v.id === "v-" + view));
   if (push) history.pushState({ view }, "", view === "home" ? "#" : "#" + view);
   openAuto = null; window.scrollTo(0, 0); render();
   if (view === "music" || view === "autos") loadPlaylists();
+  if (view === "plist") loadTracks();
 }
 document.addEventListener("click", (e) => { const b = e.target.closest("[data-go]"); if (b) go(b.dataset.go); });
 window.onpopstate = () => go(location.hash.slice(1) || "home", false);
@@ -887,8 +910,10 @@ function renderPlaylists() {
   if (!playlists) return;
   const cur = S?.music?.playlist?.uri;
   $("m-lists").innerHTML = playlists.map(p => `<button data-uri="${p.uri}" class="${p.uri === cur ? "cur" : ""}">
-      ${p.image ? `<img src="${p.image}" alt="" loading="lazy">` : `<span class="ph"></span>`}
-      <span class="tclip"><div class="pn">${esc(p.name)}</div>${p.tracks != null ? `<div class="pc">${p.tracks} songs</div>` : ""}</span></button>`).join("");
+      ${p.image ? `<img src="${p.image}" alt="" loading="lazy">` : p.uri === "spotify:liked" ? `<span class="ph liked">♥</span>` : `<span class="ph"></span>`}
+      <span class="tclip"><div class="pn">${esc(p.name)}</div>${p.tracks != null ? `<div class="pc">${p.tracks} songs</div>` : ""}</span>
+      <span class="pplay" data-play aria-label="Play"><svg><use href="#i-play"/></svg></span>
+      <svg class="chev"><use href="#i-chev"/></svg></button>`).join("");
   armHaptics($("m-lists"));
 }
 const esc = (s) => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
@@ -906,9 +931,42 @@ $("m-prev").onclick = () => music({ action: "previous" });
 $("m-shuf").onclick = () => { shuffle = !shuffle; $("m-shuf").textContent = "Shuffle: " + (shuffle ? "on" : "off"); };
 $("m-lists").onclick = (e) => {
   const b = e.target.closest("[data-uri]"); if (!b) return;
+  // the iOS haptic overlay covers the whole row, so hit-test the round play button by position
+  const r = b.querySelector("[data-play]").getBoundingClientRect();
+  if (e.clientX < r.left - 8) {  // row: open the playlist; the round button plays it right away
+    openList = playlists.find(p => p.uri === b.dataset.uri); return go("plist");
+  }
   b.classList.add("busy"); S.music.state = "PLAYING";
   music({ action: "playlist", uri: b.dataset.uri, shuffle }).then(() => renderPlaylists());
 };
+/* one playlist: its songs; tap a song to play the playlist from there */
+let tracks = {};
+async function loadTracks() {
+  const pl = openList;
+  $("pl-name").textContent = pl.name;
+  if (!tracks[pl.uri]) $("pl-tracks").innerHTML = `<div><span class="m">Loading…</span></div>`;
+  else renderTracks();
+  try { tracks[pl.uri] = await api("/api/music/tracks?uri=" + encodeURIComponent(pl.uri)); }
+  catch (e) { if (!tracks[pl.uri]) $("pl-tracks").innerHTML = `<div><span class="m">Couldn't load the songs: ${esc(e.message)}</span></div>`; return; }
+  if (openList === pl) renderTracks();
+}
+function renderTracks() {
+  const list = tracks[openList.uri] || [], cur = S?.music?.track;
+  $("pl-tracks").innerHTML = list.length ? list.map((t, i) => `<button data-track="${t.uri}" class="${t.uri === cur ? "cur" : ""}">
+      ${t.image ? `<img src="${t.image}" alt="" loading="lazy">` : `<span class="tn">${i + 1}</span>`}
+      <span class="tclip"><div class="pn">${esc(t.name)}</div><div class="pc">${esc(t.artist)}</div></span></button>`).join("")
+    : `<div><span class="m">No songs</span></div>`;
+  armHaptics($("pl-tracks"));
+}
+function playList(body, btn) {
+  btn?.classList.add("busy"); S.music.state = "PLAYING";
+  music({ action: "playlist", uri: openList.uri, ...body }).then(() => { btn?.classList.remove("busy"); renderPlaylists(); });
+}
+$("pl-tracks").onclick = (e) => {
+  const b = e.target.closest("[data-track]"); if (b) playList({ start: b.dataset.track, shuffle }, b);
+};
+$("pl-play").onclick = (e) => playList({ shuffle: false }, e.currentTarget);
+$("pl-shuf").onclick = (e) => playList({ shuffle: true }, e.currentTarget);
 let lastArt = null;
 /* ---------- heating ---------- */
 let heatPending = null, heatTimer = null;
@@ -1020,6 +1078,7 @@ function renderMusic() {
     $("m-art").classList.remove("has");
     if (artKey) { $("m-img").onload = () => $("m-art").classList.add("has"); $("m-img").src = "/api/music/art?k=" + encodeURIComponent(artKey); }
   }
+  document.querySelectorAll("#pl-tracks [data-track]").forEach(b => b.classList.toggle("cur", b.dataset.track === m.track));
   if (playlists) document.querySelectorAll("#m-lists [data-uri]").forEach(b => b.classList.toggle("cur", b.dataset.uri === m.playlist?.uri));
 }
 
