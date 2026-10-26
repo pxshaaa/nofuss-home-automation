@@ -135,6 +135,8 @@ main { overflow-x: clip; }
 .period .days button { width: 34px; height: 34px; font-size: 13px; }
 .addp { color: var(--accent); font-weight: 600; padding: 12px 0 2px; }
 .tile.heating-on .ico { background: #ff6b3533; color: #ff6b35; }
+.tile.heating-idle .ico { background: #0a84ff2e; color: var(--blue); }
+.heat .tv.idle { color: var(--blue); }
 
 /* curtain */
 .window { height: 190px; border-radius: 14px; position: relative; overflow: hidden;
@@ -1152,14 +1154,30 @@ $("hs-body").onchange = (e) => {
   e.target.blur(); hsSave({ periods });
 };
 
+// What the radiator is actually doing. With a room meter in charge, ask the thermostat's own view (its target vs
+// its reading at the radiator), since that is what opens the valve.
+function heatState(t, target) {
+  if (t.mode === "off" || t.on === false) return "off";
+  if (t.window_open) return "paused";
+  if (t.mode === "boost") return "boost";
+  const [cur, want] = t.following && t.own != null && t.sent != null && heatPending == null
+    ? [t.own, t.sent] : [t.current, target];
+  if (cur == null || want == null) return "holding";
+  if (want > cur) return "heating";
+  return t.current > target + 0.3 ? "cooling" : "holding";
+}
 function renderHeating() {
   const t = S.thermostat || {};
   $("tile-heating").hidden = !t.found;
   if (!t.found) return;
-  const target = heatPending ?? t.target, off = t.mode === "off";
+  const target = heatPending ?? t.target, off = t.mode === "off" || t.on === false, st = heatState(t, target);
+  const word = { off: "off", paused: "window open · paused", boost: "boosting", heating: `heating to ${target}°`,
+    cooling: `cooling to ${target}°`, holding: `holding ${target}°` }[st];
   $("t-heating").textContent = t.current == null ? "Waiting for thermostat…"
-    : `${t.current.toFixed(1)}° · ` + (off ? "off" : `heating to ${target}°` + (S.heating_schedule?.enabled ? ` · schedule (${S.heating_schedule.now === "save" ? "saving" : "home"})` : "")) + (t.window_open ? " · window open" : "");
-  $("tile-heating").classList.toggle("heating-on", !off && t.current != null && t.target > t.current);
+    : `${t.current.toFixed(1)}° · ${word}` + (!off && S.heating_schedule?.enabled ? ` · schedule (${S.heating_schedule.now === "save" ? "saving" : "home"})` : "");
+  $("tile-heating").classList.toggle("heating-on", st === "heating" || st === "boost");
+  $("tile-heating").classList.toggle("heating-idle", t.current != null && st !== "heating" && st !== "boost");
+  $("h-target").classList.toggle("idle", st !== "heating" && st !== "boost");
   $("h-cur").textContent = t.current == null ? "–" : t.current.toFixed(1) + "°";
   $("h-target").textContent = off ? "Off" : t.mode === "boost" ? "Max" : target == null ? "–" : (+target).toFixed(1) + "°";
   $("h-tlabel").textContent = heatPending != null ? "setting…" : "target";
