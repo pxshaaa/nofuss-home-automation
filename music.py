@@ -31,6 +31,7 @@ class Spotify:
         self.token, self.expires = None, 0
         self.playlists, self.playlists_at = [], 0
         self.track_cache = {}
+        self.likes = {}  # playlist id -> follower count ("likes" in the Spotify app)
 
     def _access_token(self):
         if self.token and time.time() < self.expires - 60:
@@ -111,6 +112,31 @@ class Spotify:
                             "image": imgs[-1]["url"] if imgs else None})
         self.track_cache[uri] = (time.time(), out)
         return out
+
+    def find_mood(self, query, min_likes=1000, min_songs=15):
+        """A random public playlist matching `query` (e.g. "jazz") with at least `min_likes` likes, or None.
+        Search results don't carry the like count, so candidates are checked one by one in random order."""
+        found, q = {}, urllib.parse.quote(query)
+        flat = lambda s: re.sub(r"[\W_]+", "", s.lower())  # "Lo-fi" ~ "lofi", "rainy day" ~ "Rainy days"
+        words = [flat(w) for w in query.split() if len(flat(w)) >= 3] or [flat(query)]
+        for offset in range(0, 50, 10):
+            page = self.get(f"/search?q={q}&type=playlist&limit=10&offset={offset}")["playlists"]
+            for p in page.get("items") or []:
+                text = flat(f"{p['name']} {p.get('description') or ''}") if p else ""
+                # Spotify's search is fuzzy (gibberish still finds *something*): the mood must really be in it
+                if p and any(w in text for w in words) \
+                        and (p.get("items") or p.get("tracks") or {}).get("total", 0) >= min_songs:
+                    found[p["id"]] = p
+            if offset + 10 >= page.get("total", 0):
+                break
+        for pid in random.sample(list(found), len(found)):
+            if pid not in self.likes:
+                self.likes[pid] = self.get(f"/playlists/{pid}?fields=followers")["followers"]["total"]
+            if self.likes[pid] >= min_likes:
+                p, imgs = found[pid], found[pid].get("images") or []
+                return {"uri": p["uri"], "name": p["name"], "likes": self.likes[pid],
+                        "image": imgs[-1]["url"] if imgs else None}
+        return None
 
     @staticmethod
     def _embed_tracks(uri):
@@ -278,7 +304,14 @@ class Music:
             g = z.group
             g.volume = max(0, min(100, g.volume + (4 if action == "vol_up" else -4)))
 
-    async def command(self, action, uri=None, volume=None, shuffle=False, reason="manual", start=None):
+    async def play_mood(self, query):
+        """Shuffle a random well-liked Spotify playlist for a mood. Returns the playlist, or None if none fit."""
+        p = await asyncio.to_thread(self.spotify.find_mood, query)
+        if p and not await self.command("playlist", p["uri"], shuffle=True, reason=f"mood “{query}”", name=p["name"]):
+            return None
+        return p
+
+    async def command(self, action, uri=None, volume=None, shuffle=False, reason="manual", start=None, name=None):
         async with self.lock:
             try:
                 await asyncio.to_thread(self._do, action, uri, volume, shuffle, start)
@@ -289,8 +322,8 @@ class Music:
                     self.history.add(f"FAILED music {action} · {exc}")
                     return False
             if action == "playlist":
-                name = next((p["name"] for p in self.spotify.playlists if p["uri"] == uri),
-                            "Liked Songs" if uri == LIKED else "playlist")
+                name = name or next((p["name"] for p in self.spotify.playlists if p["uri"] == uri),
+                                    "Liked Songs" if uri == LIKED else "playlist")
                 self.state["playlist"] = self.cfg["last_playlist"] = {"uri": uri, "name": name}
                 self.on_config_change()
                 self.history.add(f"Music: {name}" + ("" if reason == "manual" else f" · {reason}"))

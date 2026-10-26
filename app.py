@@ -1222,6 +1222,20 @@ async def api_music(request):
     return web.json_response({"ok": ok, "music": request.app["music"].status()})
 
 
+async def api_music_mood(request):
+    query = str((await request.json()).get("query") or "").strip()[:60]
+    if not query:
+        raise web.HTTPBadRequest(text="empty mood")
+    try:
+        p = await request.app["music"].play_mood(query)
+    except Exception as exc:  # noqa: BLE001 — Spotify unreachable, login expired, …
+        log.warning("mood search failed: %s", exc)
+        return web.json_response({"ok": False, "error": "Spotify search failed"})
+    if not p:
+        return web.json_response({"ok": False, "error": f"No “{query}” playlist with 1,000+ likes"})
+    return web.json_response({"ok": True, "playlist": p, "music": request.app["music"].status()})
+
+
 async def api_music_step(request):
     """For iPhone Shortcuts / Control Center buttons: one POST, no body."""
     ok = await request.app["music"].command("vol_" + request.match_info["dir"])
@@ -1475,6 +1489,7 @@ def main():
         web.post("/api/curtain", api_curtain),
         web.post("/api/lamp", api_lamp),
         web.post("/api/music", api_music),
+        web.post("/api/music/mood", api_music_mood),
         web.post("/api/heating", api_heating),
         web.post("/api/heating/schedule", api_heating_schedule),
         web.get("/api/heating/usage", api_heating_usage),

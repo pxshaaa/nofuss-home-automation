@@ -243,7 +243,11 @@ main { overflow-x: clip; }
 .hu-pair { display: flex; gap: 10px; } .hu-pair > * { flex: 1; min-width: 0; }
 #pr-preset { flex-wrap: wrap; gap: 2px; } #pr-preset button { flex: 1 0 auto; padding: 8px 10px; }
 .hu-pair > span, .hu-pair label > span { display: block; font-size: 13px; color: var(--muted); margin: 0 2px 6px; }
-input[type=time], input[type=date], input[type=number], #pr-mac { font: inherit; color: var(--text); background: var(--fill); border: 0; border-radius: 10px;
+.mood-row { display: flex; gap: 8px; } .mood-row input { flex: 1; min-width: 0; }
+.moods { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.moods button { padding: 7px 13px; border-radius: 16px; background: var(--fill); font-size: 14px; font-weight: 500; }
+#mood-chips button.busy, #mood-go.busy { animation: breathe 1.1s ease-in-out infinite; }
+input[type=time], input[type=date], input[type=number], #pr-mac, #mood-q { font: inherit; color: var(--text); background: var(--fill); border: 0; border-radius: 10px;
   padding: 8px 12px; width: 100%; -webkit-appearance: none; text-align: left; }
 .rowend { display: flex; justify-content: space-between; align-items: center; margin-top: 18px; }
 .del { color: var(--danger); font-size: 15px; padding: 6px 0; }
@@ -453,6 +457,14 @@ details summary::-webkit-details-marker { display: none; }
       </div>
       <div class="slider music" id="m-vol"><div class="fill"></div><div class="txt"><span>Volume</span><span class="val"></span></div></div>
       <div class="devname" id="m-spk"></div>
+    </div>
+    <div class="label">Mood</div>
+    <div class="card">
+      <form class="mood-row" id="mood-form"><input type="search" id="mood-q" placeholder="Jazz, lo-fi, rainy day…" enterkeyhint="go" autocomplete="off"><button class="btn primary small" id="mood-go">Play</button></form>
+      <div class="moods" id="mood-chips">
+        <button>Jazz</button><button>Lo-fi</button><button>Chill</button><button>Focus</button><button>Classical</button><button>Dinner</button><button>Party</button>
+      </div>
+      <p class="hs-note" id="mood-note">Shuffles a random Spotify playlist with 1,000+ likes.</p>
     </div>
     <div class="label rowlabel">Playlists <button id="m-shuf">Shuffle: off</button></div>
     <div class="card plist" id="m-lists"><div><span class="m">Loading…</span></div></div>
@@ -1008,6 +1020,18 @@ $("pl-tracks").onclick = (e) => {
 };
 $("pl-play").onclick = (e) => playList({ shuffle: false }, e.currentTarget);
 $("pl-shuf").onclick = (e) => playList({ shuffle: true }, e.currentTarget);
+/* mood: the Mac searches Spotify for a well-liked playlist and shuffles it */
+function playMood(q, btn) {
+  q = q.trim(); if (!q || btn.classList.contains("busy")) return;
+  btn.classList.add("busy"); $("mood-note").textContent = `Looking for “${q}”…`;
+  api("/api/music/mood", "POST", { query: q }).then(r => {
+    if (!r.ok) { $("mood-note").textContent = r.error; toast(r.error); return; }
+    $("mood-note").textContent = `Playing “${r.playlist.name}” · ${r.playlist.likes.toLocaleString("de-DE")} likes`;
+    S.music = r.music; musicHold = 0; render();
+  }).catch(e => toast("Error: " + e.message)).finally(() => btn.classList.remove("busy"));
+}
+$("mood-form").onsubmit = (e) => { e.preventDefault(); $("mood-q").blur(); playMood($("mood-q").value, $("mood-go")); };
+$("mood-chips").onclick = (e) => { const b = e.target.closest("button"); if (b) playMood(b.textContent, b); };
 let lastArt = null;
 /* ---------- heating ---------- */
 let heatPending = null, heatTimer = null;
