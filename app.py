@@ -1222,6 +1222,11 @@ async def api_music(request):
     return web.json_response({"ok": ok, "music": request.app["music"].status()})
 
 
+async def api_music_like(request):
+    ok, error = await request.app["music"].like(bool((await request.json()).get("on", True)))
+    return web.json_response({"ok": ok, "error": error, "music": request.app["music"].status()})
+
+
 async def api_music_mood(request):
     query = str((await request.json()).get("query") or "").strip()[:60]
     if not query:
@@ -1490,6 +1495,7 @@ def main():
         web.post("/api/lamp", api_lamp),
         web.post("/api/music", api_music),
         web.post("/api/music/mood", api_music_mood),
+        web.post("/api/music/like", api_music_like),
         web.post("/api/heating", api_heating),
         web.post("/api/heating/schedule", api_heating_schedule),
         web.get("/api/heating/usage", api_heating_usage),

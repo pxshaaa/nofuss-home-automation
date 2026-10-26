@@ -32,6 +32,7 @@ class Spotify:
         self.playlists, self.playlists_at = [], 0
         self.track_cache = {}
         self.likes = {}  # playlist id -> follower count ("likes" in the Spotify app)
+        self.liked = {}  # track id -> in your Liked Songs
 
     def _access_token(self):
         if self.token and time.time() < self.expires - 60:
@@ -49,10 +50,27 @@ class Spotify:
         self.token, self.expires = tok["access_token"], time.time() + tok.get("expires_in", 3600)
         return self.token
 
-    def get(self, path):
-        req = urllib.request.Request(f"https://api.spotify.com/v1{path}",
+    def get(self, path, method="GET"):
+        req = urllib.request.Request(f"https://api.spotify.com/v1{path}", method=method,
                                      headers={"Authorization": f"Bearer {self._access_token()}"})
-        return json.load(urllib.request.urlopen(req, timeout=10))
+        body = urllib.request.urlopen(req, timeout=10).read()
+        return json.loads(body) if body.strip() else None
+
+    def is_liked(self, track_uri):
+        tid = track_uri.split(":")[-1]
+        if tid not in self.liked:
+            self.liked[tid] = None  # asked once per song, also when it fails (refresh runs every few seconds)
+            # the newer /me/library endpoints; /me/tracks/contains is closed to dev apps
+            self.liked[tid] = bool(self.get(f"/me/library/contains?uris={track_uri}")[0])
+        return self.liked[tid]
+
+    def like(self, track_uri, on=True):
+        """Add a song to (or remove it from) Liked Songs. Needs the user-library-modify permission."""
+        tid = track_uri.split(":")[-1]
+        self.get(f"/me/library?uris={track_uri}", method="PUT" if on else "DELETE")
+        self.liked[tid] = on
+        self.track_cache.pop(LIKED, None)
+        self.playlists_at = 0  # the Liked Songs count changed
 
     def my_playlists(self):
         if self.playlists and time.time() - self.playlists_at < 600:
@@ -209,6 +227,29 @@ class Music:
         except Exception as exc:  # noqa: BLE001
             self.error = str(exc)
             self._coord = None
+        track = self.state.get("track")
+        try:  # ♥ state of the current song; asked once per song, then cached
+            self.state["liked"] = await asyncio.to_thread(self.spotify.is_liked, track) if track else None
+        except Exception as exc:  # noqa: BLE001
+            self.state["liked"] = None
+            log.debug("liked check failed: %s", exc)
+
+    async def like(self, on=True):
+        """♥ the song playing now. Returns (ok, error)."""
+        track = self.state.get("track")
+        if not track:
+            return False, "No Spotify song playing"
+        try:
+            await asyncio.to_thread(self.spotify.like, track, on)
+        except urllib.error.HTTPError as exc:
+            if exc.code in (401, 403):
+                return False, "Spotify needs one more permission: reconnect it (see README)"
+            return False, f"Spotify error {exc.code}"
+        except Exception as exc:  # noqa: BLE001
+            return False, str(exc)
+        self.state["liked"] = on
+        self.history.add(f"{'♥ Liked' if on else 'Unliked'}: {self.state.get('title') or 'song'}")
+        return True, None
 
     def _queue_tracks(self, z, uris):
         """Queue single songs (Liked Songs has no share link). Sonos takes ~3 s per 16 songs, so the first 16

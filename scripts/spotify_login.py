@@ -21,7 +21,8 @@ import webbrowser
 from pathlib import Path
 
 REDIRECT = "http://127.0.0.1:8766/callback"
-SCOPES = "playlist-read-private playlist-read-collaborative user-read-playback-state"
+SCOPES = ("playlist-read-private playlist-read-collaborative user-read-playback-state user-read-currently-playing "
+          "user-modify-playback-state user-library-read user-library-modify")  # library-modify: the ♥ button
 OUT = Path.home() / ".config" / "nofuss-home" / "spotify.json"
 
 
