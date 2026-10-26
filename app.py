@@ -211,6 +211,8 @@ class Thermostat:
         self.on_found = lambda: None  # also called when cfg changes, to save it
         self.rooms = lambda: {}  # meter address -> {"temp", "seen", ...}, set by main()
         self.followed_at = 0
+        self.hold = None  # (mode, until): a mode we just set, kept until the broadcasts catch up
+        self.mode_seq = 0  # bumps on every mode request, so a queued older one can step aside
 
     def room_temp(self):
         """Temperature from the chosen room meter, or None when none is chosen or it went quiet."""
@@ -262,6 +264,11 @@ class Thermostat:
             log.info("found thermostat %s (%s)", device.address, self.cfg["mac"])
             self.on_found()
         self.ble, self.data, self.seen_at = device, parsed.data.get("data", {}), dt.datetime.now()
+        if self.hold:  # the thermostat keeps broadcasting its old mode for a while after a change
+            if self.data.get("mode") == self.hold[0] or time.time() > self.hold[1]:
+                self.hold = None
+            else:
+                self.data["mode"] = self.hold[0]
         if self.dev:
             self.dev.update_from_advertisement(parsed)
         self._last_adv = parsed
@@ -287,17 +294,24 @@ class Thermostat:
 
     async def command(self, action, value=None, reason="manual"):
         """action: "target" (value = °C) or "mode" (value = one of MODES)."""
+        if action == "mode":
+            self.mode_seq += 1
+            seq = self.mode_seq
         async with self.lock:
             for attempt in range(3):
+                if action == "mode" and seq != self.mode_seq:  # a newer mode tap is waiting; let it win
+                    return True
                 try:
                     dev = self._device()
                     if action == "mode":
                         ok = await (dev.turn_off() if value == "off" else dev.set_preset_mode(value))
+                        if ok is not False:
+                            self.data["mode"], self.hold = value, (value, time.time() + 120)
                         text = "Heating off" if value == "off" else f"Heating mode {value}"
                     else:
                         if self.data.get("mode") != "manual":  # Manual holds exactly the set temperature
                             await dev.set_preset_mode("manual")
-                            self.data["mode"] = "manual"
+                            self.data["mode"], self.hold = "manual", ("manual", time.time() + 120)
                             await asyncio.sleep(1)
                         self.cfg["desired"] = float(value)
                         self.on_found()

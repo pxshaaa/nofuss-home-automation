@@ -229,6 +229,8 @@ main { overflow-x: clip; }
 .seg { display: flex; background: var(--fill); border-radius: 10px; padding: 2px; }
 .seg button { flex: 1; padding: 8px 4px; font-size: 14px; border-radius: 8px; font-weight: 500; }
 .seg button.on { background: var(--card); box-shadow: 0 1px 3px rgba(0,0,0,.18); }
+.seg button.pending { animation: breathe 1.1s ease-in-out infinite; }
+@keyframes breathe { 50% { opacity: .45; } }
 .seg button small { display: block; font-size: 11px; color: var(--muted); font-weight: 400; }
 .days { display: flex; justify-content: space-between; }
 .days button { width: 38px; height: 38px; border-radius: 50%; background: var(--fill); font-size: 14px; font-weight: 600; }
@@ -971,7 +973,7 @@ let lastArt = null;
 /* ---------- heating ---------- */
 let heatPending = null, heatTimer = null;
 function heatSend(body) {
-  return api("/api/heating", "POST", body).then(r => { if (!r.ok) toast("Thermostat didn't respond"); S.thermostat = r.thermostat; heatPending = null; render(); })
+  return api("/api/heating", "POST", body).then(r => { if (!r.ok) toast("Thermostat didn't respond"); S.thermostat = { ...r.thermostat, ...(modeHold ? { mode: modeHold.mode } : {}) }; heatPending = null; render(); })
     .catch(e => { toast("Error: " + e.message); heatPending = null; render(); });
 }
 function heatStep(d) {
@@ -984,8 +986,20 @@ $("h-up").onclick = () => heatStep(0.5);
 $("h-down").onclick = () => heatStep(-0.5);
 $("h-sensor").onclick = (e) => { const b = e.target.closest("[data-sensor]"); if (!b) return;
   S.thermostat.room_sensor = b.dataset.sensor; render(); heatSend({ action: "sensor", sensor: b.dataset.sensor }); };
-$("h-modes").onclick = (e) => { const b = e.target.closest("[data-mode]"); if (!b) return;
-  S.thermostat.mode = b.dataset.mode; render(); heatSend({ action: "mode", mode: b.dataset.mode }); };
+// the thermostat takes a few seconds over Bluetooth; keep the tapped mode on screen until the Mac answers
+let modeHold = null, modeSeq = 0;  // {mode, until}
+$("h-modes").onclick = (e) => { const b = e.target.closest("[data-mode]"); if (!b || b.disabled) return;
+  const mode = b.dataset.mode, seq = ++modeSeq;
+  if (mode === S.thermostat.mode && !modeHold) return;
+  modeHold = { mode, until: Date.now() + 60000 };
+  S.thermostat.mode = mode; render();
+  api("/api/heating", "POST", { action: "mode", mode }).then(r => {
+    if (seq !== modeSeq) return;  // a newer tap owns the screen
+    modeHold = null;
+    if (!r.ok) toast("Thermostat didn't respond");
+    S.thermostat = r.thermostat; render();
+  }).catch(e => { if (seq !== modeSeq) return; modeHold = null; toast("Error: " + e.message); refresh(); });
+};
 const modeName = (m) => ({ comfort: "Comfort", eco: "Eco", manual: "Manual", boost: "Boost", off: "Off", schedule: "Schedule" }[m] || m || "–");
 /* schedule */
 let hsTimer = null;
@@ -1047,7 +1061,8 @@ function renderHeating() {
   $("h-target").textContent = off ? "Off" : t.mode === "boost" ? "Max" : target == null ? "–" : (+target).toFixed(1) + "°";
   $("h-tlabel").textContent = heatPending != null ? "setting…" : "target";
   ["h-up", "h-down"].forEach(id => $(id).disabled = !t.controllable);
-  document.querySelectorAll("#h-modes [data-mode]").forEach(b => { b.classList.toggle("on", b.dataset.mode === t.mode); b.disabled = !t.controllable; });
+  document.querySelectorAll("#h-modes [data-mode]").forEach(b => { b.classList.toggle("on", b.dataset.mode === t.mode);
+    b.classList.toggle("pending", !!modeHold && b.dataset.mode === modeHold.mode); b.disabled = !t.controllable; });
   const meters = (S.sensors || []).filter(m => m.temp != null);
   const sensorHtml = [["", "Thermostat"], ...meters.map(m => [m.id, m.name])]
     .map(([id, name]) => `<button data-sensor="${id}" class="${(t.room_sensor || "") === id ? "on" : ""}">${name}</button>`).join("");
@@ -1192,6 +1207,7 @@ async function refresh() {
     const fresh = await api("/api/state");
     if (S && Date.now() < lampHold) fresh.lamp = { ...fresh.lamp, ...pick(S.lamp, ["on", "brightness", "kelvin", "rgb", "zones"]) };
     if (S && Date.now() < musicHold) fresh.music = S.music;
+    if (modeHold && Date.now() < modeHold.until && fresh.thermostat) fresh.thermostat.mode = modeHold.mode;
     S = fresh; render();
     try { localStorage.setItem("lastState", JSON.stringify(fresh)); } catch {}
   } catch { $("sunline").textContent = "Mac mini not reachable"; }
