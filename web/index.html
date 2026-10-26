@@ -239,8 +239,9 @@ main { overflow-x: clip; }
 .hu-bars i { flex: 1; background: #ff6b35; opacity: .55; border-radius: 3px 3px 0 0; min-height: 2px; }
 .hu-bars i.today { opacity: 1; }
 .hu-pair { display: flex; gap: 10px; } .hu-pair > * { flex: 1; min-width: 0; }
-.hu-pair label > span { display: block; font-size: 13px; color: var(--muted); margin: 0 2px 6px; }
-input[type=time], input[type=date], input[type=number] { font: inherit; color: var(--text); background: var(--fill); border: 0; border-radius: 10px;
+#pr-preset { flex-wrap: wrap; gap: 2px; } #pr-preset button { flex: 1 0 auto; padding: 8px 10px; }
+.hu-pair > span, .hu-pair label > span { display: block; font-size: 13px; color: var(--muted); margin: 0 2px 6px; }
+input[type=time], input[type=date], input[type=number], #pr-mac { font: inherit; color: var(--text); background: var(--fill); border: 0; border-radius: 10px;
   padding: 8px 12px; width: 100%; -webkit-appearance: none; text-align: left; }
 .rowend { display: flex; justify-content: space-between; align-items: center; margin-top: 18px; }
 .del { color: var(--danger); font-size: 15px; padding: 6px 0; }
@@ -361,6 +362,21 @@ details summary::-webkit-details-marker { display: none; }
       <div class="card savebox" id="p-save" hidden>
         <input id="p-name" maxlength="24" placeholder="Name this look" autocomplete="off">
         <div class="pair"><button class="btn" id="p-cancel">Cancel</button><button class="btn primary" id="p-ok">Save</button></div>
+      </div>
+      <div class="label">Home &amp; away</div>
+      <div class="card" id="pr">
+        <div class="hs-row"><div class="lbl">Lamp follows my phone<small id="pr-state">–</small></div>
+          <label class="switch"><input type="checkbox" switch id="pr-on"><span></span></label></div>
+        <p class="hs-note" id="pr-help"></p>
+        <div class="field"><span>When I come home after dark</span><div class="seg" id="pr-preset"></div></div>
+        <div class="field hu-pair">
+          <label><span>Brightness, %</span><input type="number" id="pr-bri" inputmode="numeric" min="1" max="100"></label>
+          <label><span>Off after away, min</span><input type="number" id="pr-away" inputmode="numeric" min="2" max="120"></label>
+        </div>
+        <label class="field hu-pair"><span>Counts as dark from … min before sunset</span></label>
+        <input type="number" id="pr-margin" inputmode="numeric" min="0" max="120">
+        <label class="field hu-pair"><span>Phone Wi-Fi address</span></label>
+        <input type="text" id="pr-mac" autocapitalize="characters" spellcheck="false" placeholder="AA:BB:CC:DD:EE:FF">
       </div>
       <div class="label">Automations</div>
       <div id="l-autos"></div>
@@ -1021,6 +1037,29 @@ $("h-modes").onclick = (e) => { const b = e.target.closest("[data-mode]"); if (!
     S.thermostat = r.thermostat; render();
   }).catch(e => { if (seq !== modeSeq) return; modeHold = null; toast("Error: " + e.message); refresh(); });
 };
+/* home & away: the Mac watches for the phone on the Wi-Fi */
+function prSave(patch) {
+  Object.assign(S.presence, patch); renderPresence(true);
+  api("/api/presence", "POST", patch).then(p => { S.presence = p; renderPresence(true); })
+    .catch(e => { toast("Error: " + e.message); refresh(); });
+}
+function renderPresence(force) {
+  const c = S.presence; if (!c) return;
+  const hhmm = (iso) => iso ? new Date(iso).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" }) : "";
+  $("pr-on").checked = !!c.enabled; $("pr-on").disabled = !c.mac;
+  $("pr-state").textContent = !c.mac ? "Enter your phone's Wi-Fi address below"
+    : c.home == null ? "Looking for your phone…" : c.home ? `Phone home since ${hhmm(c.since)}` : `Phone away since ${hhmm(c.since)}`;
+  $("pr-help").textContent = !c.mac ? "iPhone: Settings → Wi-Fi → (i) next to your network. Set Private Wi-Fi Address to Fixed, then copy the Wi-Fi Address."
+    : "Nothing runs on the phone. Coming home turns the lamp on only when it's dark; leaving turns it off.";
+  const html = S.presets.map(p => `<button data-preset="${p.id}" class="${p.id === c.preset ? "on" : ""}">${p.icon || ""} ${p.name}</button>`).join("");
+  if ($("pr-preset")._html !== html) { $("pr-preset").innerHTML = html; $("pr-preset")._html = html; armHaptics($("pr-preset")); }
+  const put = (id, v) => { const el = $(id); if (force || document.activeElement !== el) el.value = v ?? ""; };
+  put("pr-bri", c.brightness); put("pr-away", c.away_after); put("pr-margin", c.dark_margin); put("pr-mac", (c.mac || "").toUpperCase());
+}
+$("pr-on").onchange = (e) => prSave({ enabled: e.target.checked });
+$("pr-preset").onclick = (e) => { const b = e.target.closest("[data-preset]"); if (b) prSave({ preset: b.dataset.preset }); };
+[["pr-bri", "brightness"], ["pr-away", "away_after"], ["pr-margin", "dark_margin"], ["pr-mac", "mac"]].forEach(([id, k]) =>
+  $(id).addEventListener("change", (e) => prSave({ [k]: e.target.type === "number" ? +e.target.value : e.target.value.trim() })));
 /* usage & cost: the Mac logs raw heat-demand time per day; kWh and € are worked out here from the settings */
 const HU_TYPICAL = { gas: { price: 12, eff: 0.9 }, district: { price: 16, eff: 1 }, electric: { price: 36, eff: 1 },
   other: { price: 12, eff: 1 } };  // rough Berlin 2026 prices; gas: the boiler turns ~90% of it into heat
@@ -1209,6 +1248,7 @@ function render() {
   renderOther();
   renderMusic();
   renderHeating();
+  renderPresence();
   // home
   $("sunline").textContent = S.sun.sunrise ? `Sunrise ${S.sun.sunrise} · Sunset ${S.sun.sunset}` : "Tip: set your location in data/settings.json for sunrise & sunset";
   $("t-curtain").textContent = S.bluetooth === false ? "Allow Bluetooth for Python on the Mac (System Settings)"

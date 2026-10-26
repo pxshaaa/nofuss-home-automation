@@ -55,6 +55,25 @@ launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
 sleep 1
 launchctl bootstrap "gui/$(id -u)" "$PLIST"
 
+# "Home & away" needs the Mac's ARP table. macOS hides it from Python, but not from the system shell, so a
+# tiny job copies it to data/arp.txt every 15 s.
+ARP_LABEL="$LABEL.arp"
+ARP_PLIST="$HOME/Library/LaunchAgents/$ARP_LABEL.plist"
+mkdir -p "$HERE/data"
+cat > "$ARP_PLIST" <<PL
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>$ARP_LABEL</string>
+  <key>ProgramArguments</key><array><string>/bin/sh</string><string>-c</string>
+    <string>/usr/sbin/arp -lan &gt; "$HERE/data/arp.tmp" &amp;&amp; mv "$HERE/data/arp.tmp" "$HERE/data/arp.txt"</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>StartInterval</key><integer>15</integer>
+</dict></plist>
+PL
+launchctl bootout "gui/$(id -u)/$ARP_LABEL" 2>/dev/null || true
+launchctl bootstrap "gui/$(id -u)" "$ARP_PLIST"
+
 HOST="$(scutil --get LocalHostName 2>/dev/null || hostname -s)"
 cat <<MSG
 

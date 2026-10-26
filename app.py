@@ -9,6 +9,7 @@ import faulthandler
 import json
 import logging
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -425,6 +426,110 @@ class HeatMeter:
         save(self.FILE, self.store)
 
 
+class Presence:
+    """Notices your phone joining or leaving the home Wi-Fi with nothing running on the phone: the Mac pings it
+    and reads its own ARP table. A sleeping iPhone ignores pings but keeps answering ARP, and the table's
+    "Expire(I)" column only refreshes on traffic *from* the phone, so a live one there means it's home.
+    The phone is known by its private Wi-Fi address, which must be set to Fixed for the home network."""
+
+    EVERY = 30
+    SWEEP_EVERY = 300  # phone not at its last IP: look for its address across the subnet this often
+
+    def __init__(self, cfg, history):
+        self.cfg = cfg  # {"enabled", "mac", "ip", "away_after" min, "preset", "brightness", "dark_margin" min}
+        self.history = history
+        self.home, self.seen, self.since, self.started, self.swept = None, 0, None, None, 0
+        self.on_arrive = self.on_leave = None  # async callbacks, set by main()
+        self.on_config_change = lambda: None
+
+    @staticmethod
+    def norm(mac):
+        return ":".join(x.zfill(2) for x in str(mac or "").strip().lower().replace("-", ":").split(":")) if mac else ""
+
+    @staticmethod
+    async def _run(*cmd):
+        p = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE,
+                                                 stderr=asyncio.subprocess.DEVNULL)
+        out, _ = await p.communicate()
+        return p.returncode, out.decode(errors="replace")
+
+    ARP_FILE = DATA / "arp.txt"  # macOS hides the ARP table from Python; setup.sh's helper job copies it here
+
+    async def _arp(self):
+        """mac -> (ip, heard from it lately)"""
+        try:
+            if time.time() - self.ARP_FILE.stat().st_mtime > 60:
+                raise FileNotFoundError("stale")
+            out = self.ARP_FILE.read_text()
+        except OSError:
+            if not getattr(self, "_warned", False):
+                self._warned = True
+                log.warning("no fresh %s: run setup.sh again to install the ARP helper", self.ARP_FILE.name)
+            _, out = await self._run("/usr/sbin/arp", "-lan")
+        rows = {}
+        for f in (line.split() for line in out.splitlines()[1:]):
+            if len(f) >= 4 and f[1].count(":") == 5:
+                rows[self.norm(f[1])] = (f[0], f[3] not in ("expired", "(none)"))
+        return rows
+
+    @staticmethod
+    def _local_ip():
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("192.0.2.1", 9))  # picks the outgoing interface; sends nothing
+            return s.getsockname()[0]
+
+    @staticmethod
+    def _sweep(ip):
+        """One empty UDP packet to every address in the /24, so the Mac ARPs them all."""
+        base = ip.rsplit(".", 1)[0]
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.setblocking(False)
+            for i in range(1, 255):
+                try:
+                    s.sendto(b"", (f"{base}.{i}", 9))
+                except OSError:
+                    pass
+
+    async def probe(self):
+        mac, ip = self.norm(self.cfg.get("mac")), self.cfg.get("ip")
+        pinged = bool(ip) and (await self._run("/sbin/ping", "-c1", "-W800", ip))[0] == 0
+        rows = await self._arp()
+        if mac not in rows and time.time() - self.swept > self.SWEEP_EVERY:
+            self.swept = time.time()
+            self._sweep(ip or self._local_ip())  # answers show up in the next ARP copy
+        hit = rows.get(mac)
+        if hit and hit[0] != ip:  # DHCP gave it a new address
+            self.cfg["ip"] = hit[0]
+            self.on_config_change()
+            return hit[1]
+        return bool(hit and (hit[1] or pinged))
+
+    async def tick(self, now=None):
+        if not self.cfg.get("mac"):
+            return
+        now = now or time.time()
+        self.started = self.started or now
+        if await self.probe():
+            self.seen = now
+        away_after = self.cfg.get("away_after", 10) * 60
+        if self.home is None:  # just started: settle quietly, don't switch the lamp because we restarted
+            if self.seen or now - self.started >= away_after:
+                self.home, self.since = bool(self.seen), now
+            return
+        present = bool(self.seen) and now - self.seen < away_after
+        if present == self.home:
+            return
+        self.home, self.since = present, now
+        log.info("phone %s", "home" if present else "away")
+        if self.cfg.get("enabled"):
+            await (self.on_arrive() if present else self.on_leave())
+
+    def status(self):
+        return {**self.cfg, "home": self.home,
+                "since": dt.datetime.fromtimestamp(self.since).isoformat() if self.since else None,
+                "seen": dt.datetime.fromtimestamp(self.seen).isoformat() if self.seen else None}
+
+
 def keychain(label):
     try:
         return subprocess.run(["security", "find-generic-password", "-s", label, "-w"],
@@ -574,7 +679,7 @@ class Lamp:
         })
         self.zones_at = time.monotonic()
 
-    async def apply_preset(self, p):
+    async def apply_preset(self, p, label=None):
         change = {"on": True}
         if p.get("rgb"):
             change["rgb"] = p["rgb"]
@@ -583,7 +688,7 @@ class Lamp:
         change["brightness"] = p["brightness"]
         if self.zones_supported() and self.has_cloud():
             change["zones"] = p["zones"]  # cloud round trip last; the LAN parts above land instantly
-        return await self.set(change, label=f"Lamp: {p['name']}")
+        return await self.set(change, label=label or f"Lamp: {p['name']}")
 
     async def set(self, change, reason="manual", label=None):
         """Everything over LAN (instant) except the zone switches, which only the cloud offers.
@@ -843,6 +948,40 @@ async def scheduler(app):
         await asyncio.sleep(20)
 
 
+def is_dark(s, margin_min=30):
+    """Between (sunset - margin) and (sunrise + margin); without a location, 18:00-07:00."""
+    now = dt.datetime.now(ZoneInfo(s["timezone"]))
+    sunrise, sunset = sun_times(now.date(), s)
+    if sunrise is None:
+        return not 7 <= now.hour < 18
+    margin = dt.timedelta(minutes=margin_min)
+    return now < sunrise + margin or now > sunset - margin
+
+
+async def presence_arrive(app):
+    s, c = app["settings"], app["settings"]["presence"]
+    if not is_dark(s, c.get("dark_margin", 30)):
+        log.info("phone home, but it's light out: lamp left alone")
+        return
+    p = next((p for p in s["lamp_presets"] if p["id"] == c.get("preset")), None) or s["lamp_presets"][0]
+    await app["lamp"].apply_preset({**p, "brightness": c.get("brightness", 50)},
+                                   label=f"Lamp: {p['name']} {c.get('brightness', 50)}% · you're home")
+
+
+async def presence_leave(app):
+    if app["lamp"].status().get("on") is not False:
+        await app["lamp"].set({"on": False}, label="Lamp off · you left")
+
+
+async def presence_poller(app):
+    while True:
+        try:
+            await app["presence"].tick()
+        except Exception:  # noqa: BLE001
+            log.exception("presence tick failed")
+        await asyncio.sleep(Presence.EVERY)
+
+
 async def music_poller(app):
     while True:
         await app["music"].refresh()
@@ -885,6 +1024,7 @@ def snapshot(app):
         "presets": s["lamp_presets"],
         "sensors": app["sensors"].status(),
         "thermostat": app["thermostat"].status(),
+        "presence": app["presence"].status(),
         "heating_schedule": heat_snapshot(s),
         "music": app["music"].status(),
         "bluetooth": app.get("bluetooth"),
@@ -981,6 +1121,35 @@ async def api_heating(request):
     else:
         raise web.HTTPBadRequest(text="bad action")
     return web.json_response({"ok": ok, "thermostat": t.status()})
+
+
+PRESENCE_DEFAULT = {"enabled": False, "mac": "", "ip": "", "away_after": 10, "preset": "cozy", "brightness": 50,
+                    "dark_margin": 30}
+
+
+async def api_presence(request):
+    c, body = request.app["settings"]["presence"], await request.json()
+    try:
+        if "enabled" in body:
+            c["enabled"] = bool(body["enabled"])
+        if "mac" in body:
+            mac = Presence.norm(body["mac"])
+            if mac and not re.fullmatch(r"([0-9a-f]{2}:){5}[0-9a-f]{2}", mac):
+                raise ValueError(mac)
+            if mac != c["mac"]:
+                c["mac"], c["ip"] = mac, ""
+                request.app["presence"].home = None  # new phone: settle again before acting
+        if body.get("preset"):
+            if not any(p["id"] == body["preset"] for p in request.app["settings"]["lamp_presets"]):
+                raise ValueError(body["preset"])
+            c["preset"] = body["preset"]
+        for k, lo, hi in (("away_after", 2, 120), ("brightness", 1, 100), ("dark_margin", 0, 120)):
+            if k in body:
+                c[k] = max(lo, min(hi, int(body[k])))
+    except (TypeError, ValueError):
+        raise web.HTTPBadRequest(text="bad value")
+    save(SETTINGS_FILE, request.app["settings"])
+    return web.json_response(request.app["presence"].status())
 
 
 HEAT_COST_DEFAULT = {"type": "gas", "price": None, "radiator_kw": None,  # None = the app's typical value
@@ -1235,7 +1404,8 @@ async def on_startup(app):
         app["thermostat"].on_adv(device, adv_data)
     app["scanner"] = BleakScanner(detection_callback=on_adv)
     app["tasks"] = [asyncio.create_task(scheduler(app)), asyncio.create_task(lamp_poller(app)),
-                    asyncio.create_task(music_poller(app)), asyncio.create_task(bluetooth(app))]
+                    asyncio.create_task(music_poller(app)), asyncio.create_task(bluetooth(app)),
+                    asyncio.create_task(presence_poller(app))]
     log.info("listening on :%s", PORT)
 
 
@@ -1283,6 +1453,11 @@ def main():
     app["thermostat"].rooms = lambda: app["sensors"].devices
     settings.setdefault("heating_cost", dict(HEAT_COST_DEFAULT))
     app["heat_meter"] = HeatMeter()
+    settings["presence"] = {**PRESENCE_DEFAULT, **settings.get("presence", {})}
+    app["presence"] = Presence(settings["presence"], history)
+    app["presence"].on_config_change = lambda: save(SETTINGS_FILE, settings)
+    app["presence"].on_arrive = lambda: presence_arrive(app)
+    app["presence"].on_leave = lambda: presence_leave(app)
     app["push"] = Push(DATA, CONFIG_DIR)
     app["music"] = Music(settings["music"], history)
     app["music"].on_config_change = lambda: save(SETTINGS_FILE, settings)
@@ -1304,6 +1479,7 @@ def main():
         web.post("/api/heating/schedule", api_heating_schedule),
         web.get("/api/heating/usage", api_heating_usage),
         web.post("/api/heating/cost", api_heating_cost),
+        web.post("/api/presence", api_presence),
         web.get("/api/music/playlists", api_music_playlists),
         web.get("/api/music/tracks", api_music_tracks),
         web.post("/api/music/volume/{dir:up|down}", api_music_step),
