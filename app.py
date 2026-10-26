@@ -385,6 +385,46 @@ class Sensors:
         return [{"id": addr, **d} for addr, d in self.devices.items()]
 
 
+class HeatMeter:
+    """Logs how hard the radiator thermostat asks for heat, per day, so heating cost can be estimated later.
+    The thermostat reports no valve position or energy, so this keeps two raw numbers and leaves kWh/€ to
+    the app (price and radiator size can then change afterwards, e.g. once the Nebenkostenabrechnung is in):
+    demand_s = seconds its target was above its own reading; duty_s = the same, weighted by how far the
+    valve is likely open (full at SPAN °C below target or in boost)."""
+
+    FILE = DATA / "heating_usage.json"
+    SPAN = 2.0  # °C below target at which the valve counts as fully open
+    MAX_GAP = 120  # seconds; a longer gap between ticks means we weren't watching, don't count it
+    SAVE_EVERY = 300
+
+    def __init__(self):
+        self.store = load(self.FILE, {"since": None, "days": {}})
+        self.last, self.saved_at = None, 0
+
+    def tick(self, thermostat, now=None):
+        now = now or time.time()
+        gap, self.last = (now - self.last if self.last else 0), now
+        d = thermostat.data
+        fresh = thermostat.seen_at and (dt.datetime.now() - thermostat.seen_at).total_seconds() < thermostat.STALE
+        if not fresh or not 0 < gap <= self.MAX_GAP or d.get("mode") in (None, "off") or d.get("door_open"):
+            return
+        own, target = d.get("temperature"), d.get("target_temperature")
+        if own is None or target is None:
+            return
+        duty = 1.0 if d.get("mode") == "boost" else max(0.0, min(1.0, (target - own) / self.SPAN))
+        day = self.store["days"].setdefault(dt.date.fromtimestamp(now).isoformat(), {"demand_s": 0, "duty_s": 0})
+        self.store["since"] = self.store["since"] or dt.date.fromtimestamp(now).isoformat()
+        if duty > 0:
+            day["demand_s"] = round(day["demand_s"] + gap)
+            day["duty_s"] = round(day["duty_s"] + gap * duty)
+        if now - self.saved_at >= self.SAVE_EVERY:
+            self.save()
+
+    def save(self):
+        self.saved_at = time.time()
+        save(self.FILE, self.store)
+
+
 def keychain(label):
     try:
         return subprocess.run(["security", "find-generic-password", "-s", label, "-w"],
@@ -779,6 +819,10 @@ async def scheduler(app):
         except Exception:  # noqa: BLE001
             log.exception("room follow failed")
         try:
+            app["heat_meter"].tick(app["thermostat"])
+        except Exception:  # noqa: BLE001
+            log.exception("heat meter tick failed")
+        try:
             s = app["settings"]
             now = dt.datetime.now(ZoneInfo(s["timezone"]))
             for a in s["automations"]:
@@ -937,6 +981,35 @@ async def api_heating(request):
     else:
         raise web.HTTPBadRequest(text="bad action")
     return web.json_response({"ok": ok, "thermostat": t.status()})
+
+
+HEAT_COST_DEFAULT = {"type": "gas", "price": None, "radiator_kw": None,  # None = the app's typical value
+                     "from": None, "to": None}
+
+
+def heat_usage(app):
+    return {**app["heat_meter"].store, "cost": app["settings"]["heating_cost"]}
+
+
+async def api_heating_usage(request):
+    return web.json_response(heat_usage(request.app))
+
+
+async def api_heating_cost(request):
+    c, body = request.app["settings"]["heating_cost"], await request.json()
+    if body.get("type") in {"gas", "district", "electric", "other"}:
+        c["type"] = body["type"]
+    try:
+        for k, lo, hi in (("price", 0.1, 200.0), ("radiator_kw", 0.1, 10.0)):  # ct/kWh, kW
+            if k in body:
+                c[k] = None if body[k] in (None, "") else max(lo, min(hi, round(float(body[k]), 2)))
+        for k in ("from", "to"):  # billing period, e.g. from the Nebenkostenabrechnung
+            if k in body:
+                c[k] = dt.date.fromisoformat(body[k]).isoformat() if body[k] else None
+    except (TypeError, ValueError):
+        raise web.HTTPBadRequest(text="bad value")
+    save(SETTINGS_FILE, request.app["settings"])
+    return web.json_response(heat_usage(request.app))
 
 
 def _hhmm(v):
@@ -1183,6 +1256,7 @@ async def bluetooth(app):
 async def on_cleanup(app):
     for t in app["tasks"]:
         t.cancel()
+    app["heat_meter"].save()
     if app.get("bluetooth"):
         await app["scanner"].stop()
 
@@ -1207,6 +1281,8 @@ def main():
     app["thermostat"] = Thermostat(settings["thermostat"], history)
     app["thermostat"].on_found = lambda: save(SETTINGS_FILE, settings)
     app["thermostat"].rooms = lambda: app["sensors"].devices
+    settings.setdefault("heating_cost", dict(HEAT_COST_DEFAULT))
+    app["heat_meter"] = HeatMeter()
     app["push"] = Push(DATA, CONFIG_DIR)
     app["music"] = Music(settings["music"], history)
     app["music"].on_config_change = lambda: save(SETTINGS_FILE, settings)
@@ -1226,6 +1302,8 @@ def main():
         web.post("/api/music", api_music),
         web.post("/api/heating", api_heating),
         web.post("/api/heating/schedule", api_heating_schedule),
+        web.get("/api/heating/usage", api_heating_usage),
+        web.post("/api/heating/cost", api_heating_cost),
         web.get("/api/music/playlists", api_music_playlists),
         web.get("/api/music/tracks", api_music_tracks),
         web.post("/api/music/volume/{dir:up|down}", api_music_step),

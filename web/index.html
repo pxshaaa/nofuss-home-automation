@@ -235,7 +235,12 @@ main { overflow-x: clip; }
 .days { display: flex; justify-content: space-between; }
 .days button { width: 38px; height: 38px; border-radius: 50%; background: var(--fill); font-size: 14px; font-weight: 600; }
 .days button.on { background: var(--accent); color: #fff; }
-input[type=time] { font: inherit; color: var(--text); background: var(--fill); border: 0; border-radius: 10px;
+.hu-bars { display: flex; align-items: flex-end; gap: 3px; height: 56px; margin-top: 16px; }
+.hu-bars i { flex: 1; background: #ff6b35; opacity: .55; border-radius: 3px 3px 0 0; min-height: 2px; }
+.hu-bars i.today { opacity: 1; }
+.hu-pair { display: flex; gap: 10px; } .hu-pair > * { flex: 1; min-width: 0; }
+.hu-pair label > span { display: block; font-size: 13px; color: var(--muted); margin: 0 2px 6px; }
+input[type=time], input[type=date], input[type=number] { font: inherit; color: var(--text); background: var(--fill); border: 0; border-radius: 10px;
   padding: 8px 12px; width: 100%; -webkit-appearance: none; text-align: left; }
 .rowend { display: flex; justify-content: space-between; align-items: center; margin-top: 18px; }
 .del { color: var(--danger); font-size: 15px; padding: 6px 0; }
@@ -392,6 +397,21 @@ details summary::-webkit-details-marker { display: none; }
       <div class="seg" id="hs-mode"><button data-v="0">Constant</button><button data-v="1">Schedule</button></div>
       <div id="hs-body"></div>
     </div>
+    <div class="label">Usage &amp; cost</div>
+    <div class="card" id="hu">
+      <div class="list" id="hu-sum"><div><span class="m">Collecting data…</span></div></div>
+      <div class="hu-bars" id="hu-bars"></div>
+      <div class="field"><span>Billing period</span>
+        <div class="hu-pair"><input type="date" id="hu-from" aria-label="From"><input type="date" id="hu-to" aria-label="To"></div></div>
+      <div class="field"><span>Heating type</span><div class="seg" id="hu-type">
+        <button data-v="gas">Gas</button><button data-v="district">District</button><button data-v="electric">Electric</button><button data-v="other">Other</button>
+      </div></div>
+      <div class="field hu-pair">
+        <label><span>Price, ct/kWh</span><input type="number" id="hu-price" inputmode="decimal" step="0.1" min="0"></label>
+        <label><span>Radiator, kW</span><input type="number" id="hu-kw" inputmode="decimal" step="0.1" min="0"></label>
+      </div>
+      <p class="hs-note" id="hu-note"></p>
+    </div>
     <div class="card setup" id="h-setup" hidden>
       <p><b>Read-only for now.</b> This thermostat encrypts its controls. Fetch its key once on the Mac:</p>
       <ol><li><code>.venv/bin/python scripts/switchbot_key.py <span id="h-mac">MAC</span></code></li><li>Enter your SwitchBot login (only used to fetch the key, never stored).</li></ol>
@@ -513,6 +533,7 @@ function go(view, push = true) {
   openAuto = null; window.scrollTo(0, 0); render();
   if (view === "music" || view === "autos") loadPlaylists();
   if (view === "plist") loadTracks();
+  if (view === "heating") loadUsage();
 }
 document.addEventListener("click", (e) => { const b = e.target.closest("[data-go]"); if (b) go(b.dataset.go); });
 window.onpopstate = () => go(location.hash.slice(1) || "home", false);
@@ -1000,6 +1021,49 @@ $("h-modes").onclick = (e) => { const b = e.target.closest("[data-mode]"); if (!
     S.thermostat = r.thermostat; render();
   }).catch(e => { if (seq !== modeSeq) return; modeHold = null; toast("Error: " + e.message); refresh(); });
 };
+/* usage & cost: the Mac logs raw heat-demand time per day; kWh and € are worked out here from the settings */
+const HU_TYPICAL = { gas: { price: 12, eff: 0.9 }, district: { price: 16, eff: 1 }, electric: { price: 36, eff: 1 },
+  other: { price: 12, eff: 1 } };  // rough Berlin 2026 prices; gas: the boiler turns ~90% of it into heat
+let HU = null;
+const isoDay = (d) => d.toLocaleDateString("sv");  // YYYY-MM-DD in local time
+function loadUsage() { api("/api/heating/usage").then(u => { HU = u; renderUsage(); }).catch(() => {}); }
+function huSave(patch) { if (!HU) return; Object.assign(HU.cost, patch); renderUsage(true);
+  api("/api/heating/cost", "POST", patch).then(u => { HU = u; renderUsage(true); }).catch(e => toast("Error: " + e.message)); }
+function huParams() {
+  const c = HU.cost, t = HU_TYPICAL[c.type] || HU_TYPICAL.other;
+  return { price: c.price ?? t.price, kw: c.radiator_kw ?? 1, eff: t.eff, typical: c.price == null || c.radiator_kw == null };
+}
+function huSum(from, to) {  // inclusive ISO days
+  let duty = 0, demand = 0;
+  for (const [d, v] of Object.entries(HU.days)) if (d >= from && d <= to) { duty += v.duty_s; demand += v.demand_s; }
+  const p = huParams(), kwh = duty / 3600 * p.kw;
+  return { hours: demand / 3600, kwh, eur: kwh / p.eff * p.price / 100 };
+}
+const eur = (v) => v.toLocaleString("de-DE", { style: "currency", currency: "EUR" });
+function renderUsage(force) {
+  if (!HU) return;
+  const now = new Date(), today = isoDay(now), c = HU.cost, p = huParams();
+  const yest = isoDay(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1));
+  const from = c.from || `${now.getFullYear()}-01-01`, to = c.to || today;
+  const row = (name, s) => `<div><span>${name}</span><span class="m">${s.hours.toFixed(1)} h · ${s.kwh.toFixed(1)} kWh · <b>${eur(s.eur)}</b></span></div>`;
+  $("hu-sum").innerHTML = row("Today", huSum(today, today)) + row("Yesterday", huSum(yest, yest))
+    + row("This month", huSum(today.slice(0, 8) + "01", today)) + row("Billing period", huSum(from, to));
+  const days = [...Array(14)].map((_, i) => isoDay(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 13 + i)));
+  const kwh = days.map(d => (HU.days[d]?.duty_s || 0) / 3600 * p.kw), top = Math.max(...kwh, 0.1);
+  $("hu-bars").innerHTML = days.map((d, i) =>
+    `<i class="${d === today ? "today" : ""}" style="height:${kwh[i] / top * 100}%" title="${d}: ${kwh[i].toFixed(1)} kWh"></i>`).join("");
+  document.querySelectorAll("#hu-type button").forEach(b => b.classList.toggle("on", b.dataset.v === c.type));
+  const put = (id, v, ph) => { const el = $(id); if (force || document.activeElement !== el) el.value = v ?? ""; if (ph) el.placeholder = ph; };
+  put("hu-from", from); put("hu-to", to);
+  put("hu-price", c.price, `${(HU_TYPICAL[c.type] || HU_TYPICAL.other).price} (typical)`); put("hu-kw", c.radiator_kw, "1 (typical)");
+  const since = HU.since ? new Date(HU.since).toLocaleDateString("de-DE") : "now";
+  $("hu-note").textContent = `Estimate, tracked since ${since}: time the thermostat asks for heat, weighted by how far its valve is likely open, × radiator power.`
+    + (p.typical ? " Uses typical values until you enter your price (Nebenkostenabrechnung) and radiator power." : "");
+}
+$("hu-type").onclick = (e) => { const b = e.target.closest("[data-v]"); if (b) huSave({ type: b.dataset.v }); };
+[["hu-price", "price"], ["hu-kw", "radiator_kw"], ["hu-from", "from"], ["hu-to", "to"]].forEach(([id, k]) =>
+  $(id).addEventListener("change", (e) => huSave({ [k]: e.target.value === "" ? null : (e.target.type === "number" ? +e.target.value : e.target.value) })));
+setInterval(() => { if ($("v-heating").classList.contains("active")) loadUsage(); }, 60000);
 const modeName = (m) => ({ comfort: "Comfort", eco: "Eco", manual: "Manual", boost: "Boost", off: "Off", schedule: "Schedule" }[m] || m || "–");
 /* schedule */
 let hsTimer = null;
