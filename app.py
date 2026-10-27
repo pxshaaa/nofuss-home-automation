@@ -8,6 +8,7 @@ import datetime as dt
 import faulthandler
 import json
 import logging
+import math
 import os
 import re
 import socket
@@ -200,44 +201,75 @@ class Thermostat:
     one-time key from scripts/switchbot_key.py (saved in ~/.config/nofuss-home/switchbot_keys.json)."""
 
     MODES = ["comfort", "eco", "manual", "boost", "off"]
-    FOLLOW_EVERY = 600  # seconds between room-meter corrections (each one wakes the thermostat's radio)
+    FOLLOW_EVERY = 1800  # seconds between routine room-meter corrections (each one wakes the radio, may move the valve)
     STALE = 900  # ignore readings older than this
-    GAIN = 3  # thermostat target = its own reading + GAIN x the room's shortfall
-
+    DEADBAND = 0.3  # room within this of the goal: leave the thermostat alone
+    OFFSET_TAU = 7200  # seconds; how slowly the learned room-vs-thermostat gap follows new readings
+    PUSH = 2.0  # extra degrees while warming up after the goal was raised well above the room
     def __init__(self, cfg, history):
-        self.cfg = cfg  # {"address": "", "mac": "", "room_sensor": meter address, "desired": room °C}
+        self.cfg = cfg  # {"address", "mac", "room_sensor": meter address, "desired": room °C, "offset": learned gap}
         self.history = history
         self.data, self.ble, self.seen_at, self.dev = {}, None, None, None
         self.lock = asyncio.Lock()
         self.on_found = lambda: None  # also called when cfg changes, to save it
         self.rooms = lambda: {}  # meter address -> {"temp", "seen", ...}, set by main()
         self.followed_at = 0
+        self.learned_at = None
+        self.push = False  # warming up after a big goal increase
         self.hold = None  # (mode, until): a mode we just set, kept until the broadcasts catch up
         self.mode_seq = 0  # bumps on every mode request, so a queued older one can step aside
-
     def room_temp(self):
         """Temperature from the chosen room meter, or None when none is chosen or it went quiet."""
         r = self.rooms().get(self.cfg.get("room_sensor") or "")
         if not r or r.get("temp") is None or time.time() - (r.get("seen") or 0) > self.STALE:
             return None
         return r["temp"]
-
+    def own_temp(self):
+        """The thermostat's own reading (whole degrees, taken at the radiator), or None when stale."""
+        if not self.seen_at or (dt.datetime.now() - self.seen_at).total_seconds() > self.STALE:
+            return None
+        return self.data.get("temperature")
+    def learn_offset(self):
+        """Track how much warmer the room meter reads than the thermostat, averaged over hours so the
+        thermostat's whole-degree steps don't jolt the target."""
+        room, own, now = self.room_temp(), self.own_temp(), time.time()
+        if room is None or own is None:
+            self.learned_at = None
+            return
+        if self.cfg.get("offset") is None:
+            self.cfg["offset"] = room - own
+        elif self.learned_at is not None:
+            a = 1 - math.exp(-(now - self.learned_at) / self.OFFSET_TAU)
+            self.cfg["offset"] += a * (room - own - self.cfg["offset"])
+        self.learned_at = now
     def setpoint(self, wanted, exact=False):
-        """Target to send so the *room* reaches `wanted`. The thermostat regulates on its own sensor at the
-        radiator, so hand it the room's shortfall on top of its own reading, amplified: at 1:1 a small room gap
-        is a small gap for the thermostat too, and its smooth valve control then barely opens."""
-        room, own = self.room_temp(), self.data.get("temperature")
-        if room is None or own is None or not self.seen_at \
-                or (dt.datetime.now() - self.seen_at).total_seconds() > self.STALE:
+        """Target to send so the *room* reaches `wanted`: the goal shifted by the learned sensor gap, so the
+        thermostat's own smooth valve control holds the room there. Outside the dead band the room's miss is
+        added on top; while warming up after a raise, PUSH is."""
+        room, offset = self.room_temp(), self.cfg.get("offset")
+        if room is None or offset is None:
             return wanted
-        v = max(5.0, min(30.0, own + self.GAIN * (wanted - room)))
+        v = wanted - offset
+        if self.push:
+            v += self.PUSH
+        elif abs(wanted - room) > self.DEADBAND:
+            v += wanted - room
+        v = max(5.0, min(30.0, v))
         return v if exact else round(v * 2) / 2
-
     async def follow_room(self):
         """While a room meter is in charge, keep the thermostat target tracking it."""
+        self.learn_offset()
         wanted, sent = self.cfg.get("desired"), self.data.get("target_temperature")
-        if wanted is None or sent is None or self.room_temp() is None or self.data.get("mode") != "manual" \
-                or self.lock.locked() or time.time() - self.followed_at < self.FOLLOW_EVERY:
+        room, own = self.room_temp(), self.own_temp()
+        if wanted is None or sent is None or room is None or self.data.get("mode") != "manual" or self.lock.locked():
+            return
+        urgent = False
+        if self.push and room >= wanted - self.DEADBAND:  # warmed up: drop the push now, not in 30 min
+            self.push, urgent = False, True
+        # room past the goal while the valve may still be open: cut now instead of waiting out the interval
+        if own is not None and room > wanted + self.DEADBAND and sent > own:
+            urgent = True
+        if not urgent and time.time() - self.followed_at < self.FOLLOW_EVERY:
             return
         if abs(self.setpoint(wanted, exact=True) - sent) < 0.5:  # close enough; don't flap between half steps
             return
@@ -247,12 +279,13 @@ class Thermostat:
             try:
                 if await self._device().set_target_temperature(target) is not False:
                     self.data["target_temperature"] = target
-                    log.info("room %.1f° (thermostat %.1f°) → thermostat target %g° for %g°", self.room_temp(),
-                             self.data.get("temperature"), target, wanted)
+                    self.on_found()  # saves the learned offset with the config
+                    log.info("room %.1f° (thermostat %.1f°, gap %.1f°%s) → thermostat target %g° for %g°",
+                             room, self.data.get("temperature"), self.cfg["offset"],
+                             ", warming up" if self.push else "", target, wanted)
             except Exception as exc:  # noqa: BLE001
                 log.warning("room follow failed: %s", exc)
                 self.dev = None
-
     def on_adv(self, device, adv_data):
         if self.cfg.get("address") and device.address != self.cfg["address"]:
             return
@@ -314,6 +347,8 @@ class Thermostat:
                             await dev.set_preset_mode("manual")
                             self.data["mode"], self.hold = "manual", ("manual", time.time() + 120)
                             await asyncio.sleep(1)
+                        room = self.room_temp()
+                        self.push = room is not None and room < float(value) - 1.0
                         self.cfg["desired"] = float(value)
                         self.on_found()
                         target = self.setpoint(float(value))
@@ -346,7 +381,8 @@ class Thermostat:
                 "current": d.get("temperature") if room is None else room, "own": d.get("temperature"),
                 "target": self.cfg["desired"] if following else d.get("target_temperature"),
                 "sent": d.get("target_temperature"), "room_sensor": self.cfg.get("room_sensor") or "",
-                "following": following, "mode": d.get("mode"),
+                "following": following, "mode": d.get("mode"), "offset": self.cfg.get("offset"),
+                "warming_up": self.push,
                 "on": d.get("isOn"), "battery": d.get("battery"), "window_open": d.get("door_open"),
                 "fault": d.get("fault_code"), "controllable": bool(self.cfg.get("mac") and self.key()),
                 "mac": self.cfg.get("mac"),
